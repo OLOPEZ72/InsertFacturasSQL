@@ -83,6 +83,28 @@ public sealed class ProgramExitCodeTests : IDisposable
         }
     }
 
+    [Theory]
+    [InlineData("--provider-id")]
+    [InlineData("--currency-id")]
+    [InlineData("--project-id")]
+    public void Main_WithInvalidManualReferenceId_RejectsBeforeDatabaseAccess(string option)
+    {
+        using var output = new StringWriter();
+        TextWriter previous = Console.Out;
+        Console.SetOut(output);
+        try
+        {
+            int exitCode = Program.Main(["invoice.pdf", "--preview-sql", option, "no-es-un-entero"]);
+            Assert.NotEqual(0, exitCode);
+            Assert.Contains("debe contener un entero positivo", output.ToString());
+            Assert.DoesNotContain("INSERT INTO", output.ToString());
+        }
+        finally
+        {
+            Console.SetOut(previous);
+        }
+    }
+
     public void Dispose()
     {
         Directory.Delete(_testDirectory, recursive: true);

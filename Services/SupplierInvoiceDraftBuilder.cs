@@ -27,7 +27,7 @@ public sealed class SupplierInvoiceDraftBuilder
             ["diciembre"] = 12
         };
 
-    public SupplierInvoiceDraft Build(DocumentReadResult document, int commercialProjectId)
+    public SupplierInvoiceDraft Build(DocumentReadResult document, int? commercialProjectId = null)
     {
         ArgumentNullException.ThrowIfNull(document);
 
@@ -57,7 +57,7 @@ public sealed class SupplierInvoiceDraftBuilder
             "Fecha de vencimiento",
             "Due date"));
         string? currencyCode = DetectCurrency(text);
-        var items = ParseItems(lines, commercialProjectId);
+        var items = ParseItems(lines, commercialProjectId ?? 0);
         string? explicitDescription = ReadLabeledValue(
             lines,
             "Descripción general",

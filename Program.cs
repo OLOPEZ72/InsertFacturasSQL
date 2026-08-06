@@ -26,17 +26,17 @@ public static class Program
             return ShowRawText(requestedPdf);
         }
 
-        if (!TryReadPreviewOptions(args, out string? pdfPath, out int projectId, out string? optionError))
+        if (!TryReadPreviewOptions(args, out string? pdfPath, out int? providerId, out int? currencyId, out int? projectId, out string? optionError))
         {
             Console.WriteLine(optionError);
             ShowUsage();
             return FailureExitCode;
         }
 
-        return RunSqlPreview(pdfPath!, projectId, showRawText);
+        return RunSqlPreview(pdfPath!, providerId, currencyId, projectId, showRawText);
     }
 
-    private static int RunSqlPreview(string pdfPath, int projectId, bool showRawText)
+    private static int RunSqlPreview(string pdfPath, int? providerId, int? currencyId, int? projectId, bool showRawText)
     {
         Console.WriteLine(SupplierInvoiceSqlPreviewGenerator.PreviewWarning);
 
@@ -64,6 +64,9 @@ public static class Program
 
         var builder = new SupplierInvoiceDraftBuilder();
         SupplierInvoiceDraft draft = builder.Build(document, projectId);
+        draft.ProviderConfirmedManually = providerId.HasValue;
+        draft.CurrencyConfirmedManually = currencyId.HasValue;
+        draft.ProjectConfirmedManually = projectId.HasValue;
 
         try
         {
@@ -71,11 +74,9 @@ public static class Program
             connection.Open();
 
             IProviderResolver providerResolver = new ProviderResolver();
-            ProviderResolution provider = providerResolver.Resolve(
-                connection,
-                draft.SupplierTaxId,
-                draft.ProviderName,
-                draft.ProviderName);
+            ProviderResolution provider = providerId.HasValue
+                ? new ProviderResolution(providerResolver.ResolveById(connection, providerId.Value), [], null)
+                : providerResolver.Resolve(connection, draft.SupplierTaxId, draft.ProviderName, draft.ProviderName);
 
             if (provider.Match is not null)
             {
@@ -86,6 +87,9 @@ public static class Program
             {
                 draft.Warnings.Add(provider.Warning);
             }
+
+            if (providerId.HasValue && provider.Match is null)
+                draft.Warnings.Add($"El proveedor confirmado manualmente con CompanyID {providerId.Value} no existe en dbo.Companies.");
 
             foreach (ProviderMatch candidate in provider.Candidates)
             {
@@ -101,7 +105,7 @@ public static class Program
             }
 
             ICommercialProjectReader projectReader = new CommercialProjectReader();
-            CommercialProjectMatch? project = projectReader.FindById(connection, projectId);
+            CommercialProjectMatch? project = projectId.HasValue ? projectReader.FindById(connection, projectId.Value) : null;
             if (project is not null)
             {
                 draft.CommercialProjectId = project.CommercialProjectsID;
@@ -116,12 +120,15 @@ public static class Program
             else
             {
                 draft.CommercialProjectValidationError =
-                    $"El proyecto comercial con ID {projectId} no existe.";
+                    $"El proyecto comercial con ID {projectId?.ToString() ?? "no indicado"} no existe o no se ha confirmado.";
             }
 
 
             ICurrencyReader currencyReader = new CurrencyReader();
+            if (currencyId.HasValue) draft.CurrencyId = currencyId.Value;
             CurrencyMatch? configuredCurrency = currencyReader.FindById(connection, draft.CurrencyId);
+            if (currencyId.HasValue && configuredCurrency is null)
+                draft.Warnings.Add($"La moneda confirmada manualmente con CurrencyID {currencyId.Value} no existe.");
             draft.ConfiguredCurrencyCode = configuredCurrency?.Code;
 
             if (!string.IsNullOrWhiteSpace(draft.CurrencyCode))
@@ -190,18 +197,18 @@ public static class Program
     {
         Console.WriteLine();
         Console.WriteLine("DATOS DETECTADOS");
-        Console.WriteLine($"Proveedor detectado: {draft.ProviderName}");
+        Console.WriteLine($"Proveedor {(draft.ProviderConfirmedManually ? "confirmado manualmente" : "detectado")}: {draft.ProviderName}");
         Console.WriteLine($"CIF/NIF/VAT: {draft.SupplierTaxId ?? "no detectado"}");
         Console.WriteLine($"Número de factura: {draft.InvoiceNumber}");
         Console.WriteLine($"Fecha: {(draft.InvoiceDate == DateTime.MinValue ? "no detectada" : draft.InvoiceDate.ToString("dd/MM/yyyy"))}");
         Console.WriteLine($"Fecha de vencimiento: {draft.DueDate?.ToString("dd/MM/yyyy") ?? "no detectada"}");
-        Console.WriteLine($"Moneda detectada: {draft.CurrencyCode ?? "no detectada"}");
+        Console.WriteLine($"Moneda detectada: {draft.CurrencyCode ?? "no detectada"} | CurrencyID {(draft.CurrencyConfirmedManually ? "confirmado manualmente" : "configurado")}: {draft.CurrencyId}");
         Console.WriteLine($"CurrencyID detectado: {draft.DetectedCurrencyId?.ToString() ?? "no resuelto"}");
 
         Console.WriteLine();
         Console.WriteLine("RESOLUCIONES");
         Console.WriteLine($"Proveedor: {draft.ProviderName} | CompanyID: {draft.CompanyId?.ToString() ?? "no resuelto"}");
-        Console.WriteLine($"Project-id solicitado: {draft.CommercialProjectId?.ToString() ?? "no indicado"}");
+        Console.WriteLine($"Project-id {(draft.ProjectConfirmedManually ? "confirmado manualmente" : "solicitado")}: {draft.CommercialProjectId?.ToString() ?? "no indicado"}");
         Console.WriteLine($"Proyecto: {draft.CommercialProjectName ?? "no resuelto"} | CommercialProjectsID: {draft.CommercialProjectId?.ToString() ?? "no resuelto"}");
         Console.WriteLine($"Notes: {draft.Notes}");
         Console.WriteLine($"InitDescription: {draft.InitDescription}");
@@ -260,30 +267,41 @@ public static class Program
     private static bool TryReadPreviewOptions(
         string[] args,
         out string? pdfPath,
-        out int projectId,
+        out int? providerId,
+        out int? currencyId,
+        out int? projectId,
         out string? error)
     {
         pdfPath = ReadPdfPath(args);
-        projectId = 0;
+        providerId = currencyId = projectId = null;
         error = null;
 
         bool previewSql = args.Contains("--preview-sql", StringComparer.OrdinalIgnoreCase);
-        int projectOption = Array.FindIndex(args, argument =>
-            string.Equals(argument, "--project-id", StringComparison.OrdinalIgnoreCase));
-
         if (string.IsNullOrWhiteSpace(pdfPath) || !previewSql)
         {
             error = "Debe indicar un PDF y la opción --preview-sql.";
             return false;
         }
 
-        if (projectOption < 0 || projectOption + 1 >= args.Length ||
-            !int.TryParse(args[projectOption + 1], out projectId) || projectId <= 0)
+        if (!TryReadOptionalId(args, "--provider-id", out providerId, out error) ||
+            !TryReadOptionalId(args, "--currency-id", out currencyId, out error) ||
+            !TryReadOptionalId(args, "--project-id", out projectId, out error)) return false;
+
+        return true;
+    }
+
+    private static bool TryReadOptionalId(string[] args, string option, out int? value, out string? error)
+    {
+        value = null;
+        error = null;
+        int index = Array.FindIndex(args, argument => string.Equals(argument, option, StringComparison.OrdinalIgnoreCase));
+        if (index < 0) return true;
+        if (index + 1 >= args.Length || !int.TryParse(args[index + 1], out int parsed) || parsed <= 0)
         {
-            error = "--project-id debe contener un entero positivo.";
+            error = $"{option} debe contener un entero positivo.";
             return false;
         }
-
+        value = parsed;
         return true;
     }
 
@@ -338,5 +356,5 @@ public static class Program
 
     private static void ShowUsage() =>
         Console.WriteLine(
-            "Uso: dotnet run -- \"ruta-factura.pdf\" --project-id 123 --preview-sql [--show-raw-text]");
+            "Uso: dotnet run -- \"ruta-factura.pdf\" --project-id 123 --preview-sql [--provider-id 1] [--currency-id 2] [--show-raw-text]");
 }

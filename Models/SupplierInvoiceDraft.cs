@@ -16,6 +16,9 @@ public sealed class SupplierInvoiceDraft
     public decimal? DocumentTotal { get; init; }
 
     public int? CompanyId { get; set; }
+    public bool ProviderConfirmedManually { get; set; }
+    public bool CurrencyConfirmedManually { get; set; }
+    public bool ProjectConfirmedManually { get; set; }
     public int? CommercialProjectId { get; set; }
     public string? CommercialProjectName { get; set; }
     public bool CommercialProjectIsValid { get; set; }
@@ -28,7 +31,7 @@ public sealed class SupplierInvoiceDraft
     public int SendedModeId { get; init; } = 1;
     public int CreditCardId { get; init; } = 124;
     public int PaymentMethodId { get; init; } = 400;
-    public int CurrencyId { get; init; } = 1;
+    public int CurrencyId { get; set; } = 1;
     public bool Paid { get; init; }
     public bool Charget { get; init; }
 

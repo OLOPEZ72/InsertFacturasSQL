@@ -9,6 +9,8 @@ public interface IProviderResolver
         string? taxId,
         string? legalName,
         string? tradeName);
+
+    ProviderMatch? ResolveById(SqlConnection connection, int companyId);
 }
 
 public sealed record ProviderResolution(

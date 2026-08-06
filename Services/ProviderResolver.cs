@@ -6,6 +6,11 @@ namespace InsertFacturasSQL.Services;
 
 public sealed class ProviderResolver : IProviderResolver
 {
+    private const string SelectByIdSql = """
+SELECT TOP (1) CompanyID, Name
+FROM dbo.Companies
+WHERE CompanyID = @CompanyID;
+""";
     private const string SelectByTaxIdSql = """
 SELECT TOP (10) CompanyID, Name
 FROM dbo.Companies
@@ -110,6 +115,16 @@ ORDER BY CompanyID;
         return allCandidates.Count > 1
             ? new ProviderResolution(null, allCandidates.Values.ToList(), "La búsqueda por nombre no es inequívoca.")
             : new ProviderResolution(null, [], "No se encontró un proveedor activo.");
+    }
+
+    public ProviderMatch? ResolveById(SqlConnection connection, int companyId)
+    {
+        using var command = new SqlCommand(SelectByIdSql, connection);
+        command.Parameters.Add("@CompanyID", System.Data.SqlDbType.Int).Value = companyId;
+        using var reader = command.ExecuteReader();
+        return reader.Read()
+            ? new ProviderMatch(reader.GetInt32(0), reader.IsDBNull(1) ? "" : reader.GetString(1), "ManualId")
+            : null;
     }
 
     // Compatibilidad con el importador heredado. Program.cs ya no expone ese flujo de escritura.
