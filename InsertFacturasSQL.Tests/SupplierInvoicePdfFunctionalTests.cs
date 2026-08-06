@@ -20,26 +20,38 @@ public sealed class SupplierInvoicePdfFunctionalTests : IDisposable
         string path = Path.Combine(_directory, "factura-sintetica.pdf");
         CreateSyntheticPdf(path,
         [
-            "Proveedor: Proveedor de prueba",
-            "CIF: B12345678",
-            "Factura: SYNTH-2026-001",
-            "Fecha: 06/08/2026",
-            "Descripcion: Servicio sintetico",
-            "Moneda: EUR",
-            "Subtotal: 100.00",
-            "IVA total: 21.00",
-            "Total: 121.00",
-            "ITEM|Servicio tecnico|1|100.00|21|0"
+            "FACTURA",
+            "Example AI OpCo, LLC",
+            "EU OSS VAT: EU123456789",
+            "Numero de factura: SYNTH-ABC-0031",
+            "Fecha de emision: 1 de agosto de 2026",
+            "Fecha de vencimiento: 1 de agosto de 2026",
+            "Facturar a",
+            "Example Client SA",
+            "Moneda: US$",
+            "Descripcion: Business Subscription per seat",
+            "Periodo: 1 ago 2026 - 1 sept 2026",
+            "Cantidad: 5",
+            "Precio unitario: 25,00 US$",
+            "IVA: 21 %",
+            "Importe base: 125,00 US$",
+            "Subtotal: 125,00 US$",
+            "IVA total: 26,25 US$",
+            "Total: 151,25 US$",
+            "Importe adeudado: 151,25 US$"
         ]);
 
         var document = new PdfDocumentReader().Read(path);
         var draft = new SupplierInvoiceDraftBuilder().Build(document, 321);
 
         Assert.True(document.IsSuccess);
-        Assert.Equal("SYNTH-2026-001", draft.InvoiceNumber);
-        Assert.Equal(new DateTime(2026, 8, 6), draft.InvoiceDate);
+        Assert.Equal("Example AI OpCo, LLC", draft.ProviderName);
+        Assert.Equal("EU123456789", draft.SupplierTaxId);
+        Assert.Equal("SYNTH-ABC-0031", draft.InvoiceNumber);
+        Assert.Equal(new DateTime(2026, 8, 1), draft.InvoiceDate);
+        Assert.Equal("USD", draft.CurrencyCode);
         Assert.Single(draft.Items);
-        Assert.Equal(121m, draft.CalculatedTotal);
+        Assert.Equal(151.25m, draft.CalculatedTotal);
     }
 
     public void Dispose() => Directory.Delete(_directory, recursive: true);

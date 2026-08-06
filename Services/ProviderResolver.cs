@@ -74,6 +74,33 @@ ORDER BY CompanyID;
             }
         }
 
+        if (allCandidates.Count == 0)
+        {
+            string? token = names
+                .Select(FindSignificantToken)
+                .FirstOrDefault(value => !string.IsNullOrWhiteSpace(value));
+            if (token is not null)
+            {
+                var related = ReadMatches(
+                    connection,
+                    SelectByNameSql,
+                    "@NamePattern",
+                    $"%{EscapeLikePattern(token)}%");
+                foreach (var candidate in related)
+                {
+                    allCandidates[candidate.CompanyID] = candidate with { MatchType = "SuggestedByToken" };
+                }
+
+                if (allCandidates.Count > 0)
+                {
+                    return new ProviderResolution(
+                        null,
+                        allCandidates.Values.ToList(),
+                        "No existe una coincidencia exacta; se muestran candidatos relacionados sin seleccionar ninguno automáticamente.");
+                }
+            }
+        }
+
         if (allCandidates.Count == 1)
         {
             var match = allCandidates.Values.Single();
@@ -176,6 +203,16 @@ ORDER BY CompanyID;
         }
 
         return string.Join(' ', result.ToString().Split(' ', StringSplitOptions.RemoveEmptyEntries));
+    }
+
+    private static string? FindSignificantToken(string value)
+    {
+        string[] ignored = ["LLC", "LTD", "LIMITED", "INC", "CORP", "CORPORATION", "SL", "SA", "GMBH", "BV", "SARL"];
+        return NormalizeName(value)
+            .Split(' ', StringSplitOptions.RemoveEmptyEntries)
+            .Where(token => token.Length >= 4 && !ignored.Contains(token, StringComparer.Ordinal))
+            .OrderByDescending(token => token.Length)
+            .FirstOrDefault();
     }
 }
 

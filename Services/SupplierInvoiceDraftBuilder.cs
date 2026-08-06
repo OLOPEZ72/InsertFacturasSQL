@@ -1,31 +1,80 @@
 using System.Globalization;
+using System.Text;
 using System.Text.RegularExpressions;
 using InsertFacturasSQL.Models;
 
 namespace InsertFacturasSQL.Services;
 
-public sealed partial class SupplierInvoiceDraftBuilder
+public sealed class SupplierInvoiceDraftBuilder
 {
     private const decimal TotalTolerance = 0.02m;
+
+    private static readonly IReadOnlyDictionary<string, int> SpanishMonths =
+        new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["enero"] = 1,
+            ["febrero"] = 2,
+            ["marzo"] = 3,
+            ["abril"] = 4,
+            ["mayo"] = 5,
+            ["junio"] = 6,
+            ["julio"] = 7,
+            ["agosto"] = 8,
+            ["septiembre"] = 9,
+            ["setiembre"] = 9,
+            ["octubre"] = 10,
+            ["noviembre"] = 11,
+            ["diciembre"] = 12
+        };
 
     public SupplierInvoiceDraft Build(DocumentReadResult document, int commercialProjectId)
     {
         ArgumentNullException.ThrowIfNull(document);
 
         string text = document.ExtractedText ?? "";
-        string providerName = ReadLabel(text, "Proveedor", "Supplier") ?? "";
-        string? taxId = ReadLabel(text, "CIF", "NIF", "VAT", "Tax ID");
-        string invoiceNumber = ReadLabel(
-            text,
+        string[] lines = GetLines(text);
+        string[] issuerLines = GetIssuerBlock(lines);
+        string providerName = ReadLabeledValue(issuerLines, "Proveedor", "Supplier", "Emisor") ??
+                              FindIssuerCompanyName(issuerLines) ??
+                              "";
+        string? taxId = ReadTaxIdentifier(issuerLines) ?? ReadTaxIdentifier(lines);
+        string invoiceNumber = ReadLabeledValue(
+            lines,
             "Número de factura",
             "Numero de factura",
             "Invoice number",
             "Invoice no",
             "Factura") ?? "";
-        string mainDescription = ReadLabel(text, "Descripción", "Descripcion", "Description", "Concepto") ?? "";
-        string? currencyCode = ReadLabel(text, "Moneda", "Currency");
-        DateTime invoiceDate = TryParseDate(ReadLabel(text, "Fecha de factura", "Invoice date", "Fecha"));
-        DateTime? paymentDate = TryParseNullableDate(ReadLabel(text, "Fecha de pago", "Payment date"));
+        DateTime invoiceDate = TryParseDate(ReadLabeledValue(
+            lines,
+            "Fecha de emisión",
+            "Fecha de emision",
+            "Issue date",
+            "Invoice date",
+            "Fecha"));
+        DateTime? dueDate = TryParseNullableDate(ReadLabeledValue(
+            lines,
+            "Fecha de vencimiento",
+            "Due date"));
+        string? currencyCode = DetectCurrency(text);
+        var items = ParseItems(lines, commercialProjectId);
+        string? explicitDescription = ReadLabeledValue(
+            lines,
+            "Descripción general",
+            "Descripcion general",
+            "Main description",
+            "Descripción",
+            "Descripcion",
+            "Description");
+        if (explicitDescription is not null &&
+            NormalizeText(explicitDescription).StartsWith("CANTIDAD", StringComparison.Ordinal))
+        {
+            explicitDescription = null;
+        }
+
+        string mainDescription = explicitDescription ??
+            items.FirstOrDefault()?.Description ??
+            "";
 
         var draft = new SupplierInvoiceDraft
         {
@@ -33,15 +82,15 @@ public sealed partial class SupplierInvoiceDraftBuilder
             ProviderName = providerName,
             InvoiceNumber = invoiceNumber,
             InvoiceDate = invoiceDate,
+            DueDate = dueDate,
             MainDescription = mainDescription,
             CurrencyCode = currencyCode,
-            PaymentDate = paymentDate,
-            PaymentNotes = ReadLabel(text, "Notas de pago", "Payment notes"),
-            DocumentSubtotal = TryParseNullableDecimal(ReadLabel(text, "Subtotal", "Base imponible")),
-            DocumentTaxTotal = TryParseNullableDecimal(ReadLabel(text, "IVA total", "Tax total", "Impuestos")),
-            DocumentTotal = TryParseNullableDecimal(ReadLabel(text, "Total factura", "Invoice total", "Total")),
+            PaymentNotes = ReadLabeledValue(lines, "Notas de pago", "Payment notes"),
+            DocumentSubtotal = ReadAmount(lines, "Subtotal", "Total sin impuestos", "Base imponible"),
+            DocumentTaxTotal = ReadAmount(lines, "IVA total", "Tax amount", "Tax total", "Impuestos"),
+            DocumentTotal = ReadAmount(lines, "Importe adeudado", "Amount due", "Total", "Invoice total"),
             CommercialProjectId = commercialProjectId,
-            Items = ParseItems(text, commercialProjectId)
+            Items = items
         };
 
         if (draft.DocumentSubtotal is null || draft.DocumentTaxTotal is null || draft.DocumentTotal is null)
@@ -65,7 +114,9 @@ public sealed partial class SupplierInvoiceDraftBuilder
 
         if (draft.CommercialProjectId is null or <= 0 || !draft.CommercialProjectIsValid)
         {
-            draft.ValidationErrors.Add("Proyecto comercial no válido o no disponible para nuevas facturas.");
+            draft.ValidationErrors.Add(
+                draft.CommercialProjectValidationError ??
+                $"El proyecto comercial con ID {draft.CommercialProjectId?.ToString() ?? "no indicado"} no es válido.");
         }
 
         if (string.IsNullOrWhiteSpace(draft.InvoiceNumber))
@@ -146,6 +197,13 @@ public sealed partial class SupplierInvoiceDraftBuilder
             {
                 draft.ValidationErrors.Add($"{prefix} proyecto comercial obligatorio.");
             }
+
+            if (item.DocumentLineNetAmount.HasValue &&
+                Math.Abs(item.DocumentLineNetAmount.Value - item.CalculatedNetAmount) > TotalTolerance)
+            {
+                draft.ValidationErrors.Add(
+                    $"{prefix} la base calculada ({item.CalculatedNetAmount:F2}) no coincide con el PDF ({item.DocumentLineNetAmount.Value:F2}).");
+            }
         }
 
         CompareTotal(draft, "subtotal", draft.DocumentSubtotal, draft.CalculatedSubtotal);
@@ -156,6 +214,458 @@ public sealed partial class SupplierInvoiceDraftBuilder
         {
             draft.ValidationErrors.Add("Se detectó una posible factura duplicada para el proveedor, número y fecha.");
         }
+    }
+
+    private static List<SupplierInvoiceItemDraft> ParseItems(string[] lines, int commercialProjectId)
+    {
+        var structured = ParseDelimitedItems(lines, commercialProjectId);
+        if (structured.Count > 0)
+        {
+            return structured;
+        }
+
+        var labeled = ParseLabeledItem(lines, commercialProjectId);
+        if (labeled is not null)
+        {
+            return [labeled];
+        }
+
+        var tabular = ParseTabularItems(lines, commercialProjectId);
+        return tabular;
+    }
+
+    private static List<SupplierInvoiceItemDraft> ParseDelimitedItems(
+        string[] lines,
+        int commercialProjectId)
+    {
+        var items = new List<SupplierInvoiceItemDraft>();
+        foreach (string line in lines)
+        {
+            if (!line.StartsWith("ITEM|", StringComparison.OrdinalIgnoreCase) &&
+                !line.StartsWith("ITEM;", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            char separator = line[4];
+            string[] parts = line.Split(separator);
+            if (parts.Length < 5 ||
+                !TryParseDecimal(parts[2], out decimal amount) ||
+                !TryParseDecimal(parts[3], out decimal unitPrice) ||
+                !TryParseDecimal(parts[4], out decimal iva))
+            {
+                continue;
+            }
+
+            items.Add(new SupplierInvoiceItemDraft
+            {
+                Position = items.Count + 1,
+                Description = parts[1].Trim(),
+                Amount = amount,
+                UnitPrice = unitPrice,
+                IVA = iva,
+                DiscountPercent = parts.Length > 5 ? TryParseNullableDecimal(parts[5]) : null,
+                CommercialProjectId = commercialProjectId
+            });
+        }
+
+        return items;
+    }
+
+    private static SupplierInvoiceItemDraft? ParseLabeledItem(
+        string[] lines,
+        int commercialProjectId)
+    {
+        decimal? amount = ReadAmount(lines, "Cantidad", "Quantity");
+        decimal? unitPrice = ReadAmount(lines, "Precio unitario", "Unit price");
+        decimal? iva = ReadAmount(lines, "IVA", "Impuesto", "Tax rate");
+
+        if (!amount.HasValue || !unitPrice.HasValue || !iva.HasValue)
+        {
+            return null;
+        }
+
+        string description = ReadLabeledValue(
+            lines,
+            "Descripción del item",
+            "Descripcion del item",
+            "Descripción",
+            "Descripcion",
+            "Producto",
+            "Concepto") ?? FindDescriptionNearPeriodOrQuantity(lines) ?? "";
+        string? period = ReadLabeledValue(lines, "Periodo", "Period");
+        if (!string.IsNullOrWhiteSpace(period) &&
+            !description.Contains(period, StringComparison.OrdinalIgnoreCase))
+        {
+            description = $"{description} - {period}".Trim(' ', '-');
+        }
+
+        return new SupplierInvoiceItemDraft
+        {
+            Position = 1,
+            Description = description,
+            Amount = amount.Value,
+            UnitPrice = unitPrice.Value,
+            IVA = iva.Value,
+            DiscountPercent = ReadAmount(lines, "Descuento", "Discount"),
+            DocumentLineNetAmount = ReadAmount(lines, "Importe base", "Line amount", "Base"),
+            CommercialProjectId = commercialProjectId
+        };
+    }
+
+    private static List<SupplierInvoiceItemDraft> ParseTabularItems(
+        string[] lines,
+        int commercialProjectId)
+    {
+        var items = new List<SupplierInvoiceItemDraft>();
+        var rowPattern = new Regex(
+            @"^(?<description>.*?)\s*(?<amount>\d+(?:[.,]\d+)?)\s+(?<price>\d[\d.,]*)\s*(?:US\$|USD|\$|EUR|€|GBP|£)?\s+(?<iva>\d+(?:[.,]\d+)?)\s*%\s+(?<base>\d[\d.,]*)\s*(?:US\$|USD|\$|EUR|€|GBP|£)?\s*$",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+
+        for (int index = 0; index < lines.Length; index++)
+        {
+            Match match = rowPattern.Match(lines[index]);
+            if (!match.Success ||
+                !TryParseDecimal(match.Groups["amount"].Value, out decimal amount) ||
+                !TryParseDecimal(match.Groups["price"].Value, out decimal price) ||
+                !TryParseDecimal(match.Groups["iva"].Value, out decimal iva) ||
+                !TryParseDecimal(match.Groups["base"].Value, out decimal lineBase))
+            {
+                continue;
+            }
+
+            string description = match.Groups["description"].Value.Trim();
+            if (string.IsNullOrWhiteSpace(description))
+            {
+                description = FindPreviousDescription(lines, index) ?? "";
+            }
+
+            string? period = FindAdjacentPeriod(lines, index);
+            if (!string.IsNullOrWhiteSpace(period))
+            {
+                description = $"{description} - {period}".Trim(' ', '-');
+            }
+
+            items.Add(new SupplierInvoiceItemDraft
+            {
+                Position = items.Count + 1,
+                Description = description,
+                Amount = amount,
+                UnitPrice = price,
+                IVA = iva,
+                DocumentLineNetAmount = lineBase,
+                CommercialProjectId = commercialProjectId
+            });
+        }
+
+        return items;
+    }
+
+    private static string[] GetIssuerBlock(string[] lines)
+    {
+        int boundary = Array.FindIndex(lines, line =>
+        {
+            string normalized = NormalizeText(line).TrimEnd(':');
+            return normalized.StartsWith("FACTURAR A", StringComparison.Ordinal) ||
+                   normalized.StartsWith("BILL TO", StringComparison.Ordinal) ||
+                   normalized.StartsWith("FACTURADO A", StringComparison.Ordinal);
+        });
+        return boundary > 0 ? lines[..boundary] : lines;
+    }
+
+    private static string? FindIssuerCompanyName(string[] issuerLines)
+    {
+        var suffixPattern = new Regex(
+            @"^(?<company>.+?\b(?:LLC|L\.?L\.?C\.?|LTD\.?|LIMITED|INC\.?|CORP(?:ORATION)?\.?|S\.?L\.?|S\.?A\.?|GMBH|B\.?V\.?|SARL)\b[.,]?)(?:\s+\d.*)?\s*$",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+
+        foreach (string line in issuerLines.Select(line => line.Trim()))
+        {
+            Match match = suffixPattern.Match(line);
+            if (line.Length is > 2 and <= 500 &&
+                match.Success &&
+                !NormalizeText(line).StartsWith("FACTURA", StringComparison.Ordinal))
+            {
+                return match.Groups["company"].Value.Trim();
+            }
+        }
+
+        return null;
+    }
+
+    private static string? ReadTaxIdentifier(string[] lines)
+    {
+        var pattern = new Regex(
+            @"\b(?:EU\s+OSS\s+VAT|VAT\s+ID|VAT|CIF|NIF)\b\s*(?:ID)?\s*[:#-]?\s*(?<value>[A-Z]{2}[A-Z0-9-]{5,}|[A-Z0-9][A-Z0-9-]{6,})",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+
+        for (int index = 0; index < lines.Length; index++)
+        {
+            Match match = pattern.Match(lines[index]);
+            if (match.Success)
+            {
+                return match.Groups["value"].Value.Trim();
+            }
+
+            string normalized = NormalizeText(lines[index]);
+            if (normalized is "VAT" or "VAT ID" or "EU OSS VAT" or "CIF" or "NIF")
+            {
+                string? next = NextValue(lines, index);
+                if (next is not null && Regex.IsMatch(next, @"^[A-Z0-9-]{7,}$", RegexOptions.IgnoreCase))
+                {
+                    return next;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    private static string? ReadLabeledValue(string[] lines, params string[] labels)
+    {
+        foreach (string label in labels)
+        {
+            var inline = new Regex(
+                $@"^\s*{Regex.Escape(label)}\s*(?::|#|-)\s*(?<value>.+?)\s*$",
+                RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+
+            for (int index = 0; index < lines.Length; index++)
+            {
+                Match match = inline.Match(lines[index]);
+                if (match.Success)
+                {
+                    return match.Groups["value"].Value.Trim();
+                }
+
+                if (NormalizeText(lines[index]) == NormalizeText(label))
+                {
+                    return NextValue(lines, index);
+                }
+
+                var spaceSeparated = Regex.Match(
+                    lines[index],
+                    $@"^\s*{Regex.Escape(label)}\s+(?<value>\S.+?)\s*$",
+                    RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+                if (spaceSeparated.Success)
+                {
+                    return spaceSeparated.Groups["value"].Value.Trim();
+                }
+            }
+        }
+
+        return null;
+    }
+
+    private static decimal? ReadAmount(string[] lines, params string[] labels)
+    {
+        foreach (string label in labels)
+        {
+            var inline = new Regex(
+                $@"^\s*{Regex.Escape(label)}\s*(?::|#|-)?\s*(?<value>[-+]?\d[\d\s.,]*(?:\s*(?:US\$|USD|\$|EUR|€|GBP|£|%))?)\s*$",
+                RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+
+            for (int index = 0; index < lines.Length; index++)
+            {
+                Match match = inline.Match(lines[index]);
+                if (match.Success && TryParseDecimal(match.Groups["value"].Value, out decimal value))
+                {
+                    return value;
+                }
+
+                if (NormalizeText(lines[index]) == NormalizeText(label) &&
+                    TryParseDecimal(NextValue(lines, index), out value))
+                {
+                    return value;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    private static string? DetectCurrency(string text)
+    {
+        if (Regex.IsMatch(text, @"US\$|\bUSD\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
+        {
+            return "USD";
+        }
+
+        if (Regex.IsMatch(text, @"€|\bEUR\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
+        {
+            return "EUR";
+        }
+
+        if (Regex.IsMatch(text, @"£|\bGBP\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
+        {
+            return "GBP";
+        }
+
+        return Regex.IsMatch(text, @"\$", RegexOptions.CultureInvariant) ? "USD" : null;
+    }
+
+    private static DateTime TryParseDate(string? value) =>
+        TryParseNullableDate(value) ?? DateTime.MinValue;
+
+    private static DateTime? TryParseNullableDate(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return null;
+        }
+
+        Match spanish = Regex.Match(
+            value,
+            @"(?<day>\d{1,2})\s+de\s+(?<month>[\p{L}]+)\s+de\s+(?<year>\d{4})",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        if (spanish.Success &&
+            int.TryParse(spanish.Groups["day"].Value, out int day) &&
+            int.TryParse(spanish.Groups["year"].Value, out int year) &&
+            SpanishMonths.TryGetValue(spanish.Groups["month"].Value, out int month))
+        {
+            return new DateTime(year, month, day);
+        }
+
+        string[] formats = ["dd/MM/yyyy", "d/M/yyyy", "yyyy-MM-dd", "dd-MM-yyyy", "d-M-yyyy"];
+        foreach (CultureInfo culture in new[] { CultureInfo.GetCultureInfo("es-ES"), CultureInfo.InvariantCulture })
+        {
+            if (DateTime.TryParseExact(value.Trim(), formats, culture, DateTimeStyles.None, out DateTime exact) ||
+                DateTime.TryParse(value.Trim(), culture, DateTimeStyles.None, out exact))
+            {
+                return exact.Date;
+            }
+        }
+
+        return null;
+    }
+
+    private static string? FindDescriptionNearPeriodOrQuantity(string[] lines)
+    {
+        int marker = Array.FindIndex(lines, line =>
+            StartsWithLabel(line, "Periodo") || StartsWithLabel(line, "Period"));
+        if (marker < 0)
+        {
+            marker = Array.FindIndex(lines, line => StartsWithLabel(line, "Cantidad"));
+        }
+
+        return marker > 0 ? FindPreviousDescription(lines, marker) : null;
+    }
+
+    private static string? FindPreviousDescription(string[] lines, int index)
+    {
+        for (int current = index - 1; current >= 0 && current >= index - 4; current--)
+        {
+            string candidate = lines[current].Trim();
+            string normalized = NormalizeText(candidate);
+            if (candidate.Length > 2 &&
+                !Regex.IsMatch(candidate, @"^\d") &&
+                !normalized.Contains("DESCRIPCION CANTIDAD", StringComparison.Ordinal) &&
+                !StartsWithAnyKnownLabel(candidate))
+            {
+                return candidate;
+            }
+        }
+
+        return null;
+    }
+
+    private static string? FindAdjacentPeriod(string[] lines, int rowIndex)
+    {
+        for (int index = Math.Max(0, rowIndex - 2); index < Math.Min(lines.Length, rowIndex + 2); index++)
+        {
+            string? period = ReadLabeledValue([lines[index]], "Periodo", "Period");
+            if (!string.IsNullOrWhiteSpace(period))
+            {
+                return period;
+            }
+
+            if (Regex.IsMatch(
+                    lines[index],
+                    @"^\d{1,2}\s+(?:de\s+)?[\p{L}]{3,}.*\d{4}",
+                    RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
+            {
+                return lines[index].Trim();
+            }
+        }
+
+        return null;
+    }
+
+    private static bool StartsWithAnyKnownLabel(string line) =>
+        new[]
+        {
+            "Proveedor", "Supplier", "VAT", "CIF", "NIF", "Factura", "Fecha", "Periodo",
+            "Cantidad", "Precio", "IVA", "Importe", "Subtotal", "Total", "Moneda", "Currency"
+        }.Any(label => StartsWithLabel(line, label));
+
+    private static bool StartsWithLabel(string line, string label) =>
+        NormalizeText(line).StartsWith(NormalizeText(label), StringComparison.Ordinal);
+
+    private static string? NextValue(string[] lines, int index)
+    {
+        for (int current = index + 1; current < lines.Length; current++)
+        {
+            if (!string.IsNullOrWhiteSpace(lines[current]))
+            {
+                return lines[current].Trim();
+            }
+        }
+
+        return null;
+    }
+
+    private static string[] GetLines(string text) =>
+        Regex.Split(text, @"\r\n|\n|\r")
+            .Select(line => Regex.Replace(line, @"\s+", " ").Trim())
+            .Where(line => line.Length > 0)
+            .ToArray();
+
+    private static string NormalizeText(string value)
+    {
+        string decomposed = value.Normalize(NormalizationForm.FormD);
+        var result = new StringBuilder(decomposed.Length);
+        foreach (char character in decomposed)
+        {
+            if (CharUnicodeInfo.GetUnicodeCategory(character) != UnicodeCategory.NonSpacingMark)
+            {
+                result.Append(char.ToUpperInvariant(character));
+            }
+        }
+
+        return Regex.Replace(result.ToString(), @"\s+", " ").Trim();
+    }
+
+    private static decimal? TryParseNullableDecimal(string? value) =>
+        TryParseDecimal(value, out decimal parsed) ? parsed : null;
+
+    private static bool TryParseDecimal(string? value, out decimal parsed)
+    {
+        parsed = 0m;
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return false;
+        }
+
+        string normalized = Regex.Replace(value.Trim(), @"[^0-9,\.\-+]", "");
+        int comma = normalized.LastIndexOf(',');
+        int dot = normalized.LastIndexOf('.');
+
+        if (comma >= 0 && dot >= 0)
+        {
+            char decimalSeparator = comma > dot ? ',' : '.';
+            char thousandsSeparator = decimalSeparator == ',' ? '.' : ',';
+            normalized = normalized.Replace(thousandsSeparator.ToString(), "", StringComparison.Ordinal);
+            normalized = normalized.Replace(decimalSeparator, '.');
+        }
+        else if (comma >= 0)
+        {
+            normalized = normalized.Replace(',', '.');
+        }
+
+        return decimal.TryParse(
+            normalized,
+            NumberStyles.AllowDecimalPoint | NumberStyles.AllowLeadingSign,
+            CultureInfo.InvariantCulture,
+            out parsed);
     }
 
     private static void CompareTotal(
@@ -183,122 +693,4 @@ public sealed partial class SupplierInvoiceDraftBuilder
                value < maximumExclusive &&
                decimal.Round(value, scale) == value;
     }
-
-    private static List<SupplierInvoiceItemDraft> ParseItems(string text, int commercialProjectId)
-    {
-        var items = new List<SupplierInvoiceItemDraft>();
-        foreach (string rawLine in SplitLinesRegex().Split(text))
-        {
-            string line = rawLine.Trim();
-            if (!line.StartsWith("ITEM|", StringComparison.OrdinalIgnoreCase) &&
-                !line.StartsWith("ITEM;", StringComparison.OrdinalIgnoreCase))
-            {
-                continue;
-            }
-
-            char separator = line[4];
-            string[] parts = line.Split(separator);
-            if (parts.Length < 5 ||
-                !TryParseDecimal(parts[2], out decimal amount) ||
-                !TryParseDecimal(parts[3], out decimal unitPrice) ||
-                !TryParseDecimal(parts[4], out decimal iva))
-            {
-                continue;
-            }
-
-            decimal? discount = parts.Length > 5 ? TryParseNullableDecimal(parts[5]) : null;
-            items.Add(new SupplierInvoiceItemDraft
-            {
-                Position = items.Count + 1,
-                Description = parts[1].Trim(),
-                Amount = amount,
-                UnitPrice = unitPrice,
-                IVA = iva,
-                DiscountPercent = discount,
-                CommercialProjectId = commercialProjectId
-            });
-        }
-
-        return items;
-    }
-
-    private static string? ReadLabel(string text, params string[] labels)
-    {
-        foreach (string line in SplitLinesRegex().Split(text))
-        {
-            foreach (string label in labels)
-            {
-                var match = Regex.Match(
-                    line,
-                    $@"^\s*{Regex.Escape(label)}\s*[:#-]\s*(.+?)\s*$",
-                    RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
-                if (match.Success)
-                {
-                    return match.Groups[1].Value.Trim();
-                }
-            }
-        }
-
-        return null;
-    }
-
-    private static DateTime TryParseDate(string? value) =>
-        TryParseNullableDate(value) ?? DateTime.MinValue;
-
-    private static DateTime? TryParseNullableDate(string? value)
-    {
-        if (string.IsNullOrWhiteSpace(value))
-        {
-            return null;
-        }
-
-        string[] formats = ["dd/MM/yyyy", "d/M/yyyy", "yyyy-MM-dd", "dd-MM-yyyy", "d-M-yyyy"];
-        foreach (CultureInfo culture in new[] { CultureInfo.GetCultureInfo("es-ES"), CultureInfo.InvariantCulture })
-        {
-            if (DateTime.TryParseExact(value.Trim(), formats, culture, DateTimeStyles.None, out DateTime exact) ||
-                DateTime.TryParse(value.Trim(), culture, DateTimeStyles.None, out exact))
-            {
-                return exact.Date;
-            }
-        }
-
-        return null;
-    }
-
-    private static decimal? TryParseNullableDecimal(string? value) =>
-        TryParseDecimal(value, out decimal parsed) ? parsed : null;
-
-    private static bool TryParseDecimal(string? value, out decimal parsed)
-    {
-        parsed = 0m;
-        if (string.IsNullOrWhiteSpace(value))
-        {
-            return false;
-        }
-
-        string normalized = Regex.Replace(value.Trim(), @"[^0-9,\.\-]", "");
-        int comma = normalized.LastIndexOf(',');
-        int dot = normalized.LastIndexOf('.');
-
-        if (comma >= 0 && dot >= 0)
-        {
-            char decimalSeparator = comma > dot ? ',' : '.';
-            char thousandsSeparator = decimalSeparator == ',' ? '.' : ',';
-            normalized = normalized.Replace(thousandsSeparator.ToString(), "", StringComparison.Ordinal);
-            normalized = normalized.Replace(decimalSeparator, '.');
-        }
-        else if (comma >= 0)
-        {
-            normalized = normalized.Replace(',', '.');
-        }
-
-        return decimal.TryParse(
-            normalized,
-            NumberStyles.AllowDecimalPoint | NumberStyles.AllowLeadingSign,
-            CultureInfo.InvariantCulture,
-            out parsed);
-    }
-
-    [GeneratedRegex(@"\r\n|\n|\r")]
-    private static partial Regex SplitLinesRegex();
 }

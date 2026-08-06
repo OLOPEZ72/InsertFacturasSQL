@@ -17,6 +17,15 @@ public static class Program
             return ReadPdf(args[0]);
         }
 
+        bool showRawText = args.Contains("--show-raw-text", StringComparer.OrdinalIgnoreCase);
+        bool previewSql = args.Contains("--preview-sql", StringComparer.OrdinalIgnoreCase);
+        string? requestedPdf = ReadPdfPath(args);
+
+        if (showRawText && !previewSql)
+        {
+            return ShowRawText(requestedPdf);
+        }
+
         if (!TryReadPreviewOptions(args, out string? pdfPath, out int projectId, out string? optionError))
         {
             Console.WriteLine(optionError);
@@ -24,10 +33,10 @@ public static class Program
             return FailureExitCode;
         }
 
-        return RunSqlPreview(pdfPath!, projectId);
+        return RunSqlPreview(pdfPath!, projectId, showRawText);
     }
 
-    private static int RunSqlPreview(string pdfPath, int projectId)
+    private static int RunSqlPreview(string pdfPath, int projectId, bool showRawText)
     {
         Console.WriteLine(SupplierInvoiceSqlPreviewGenerator.PreviewWarning);
 
@@ -37,6 +46,11 @@ public static class Program
             Console.WriteLine($"No se pudo leer el PDF: {document.ErrorMessage}");
             Console.WriteLine("Resultado: NO VÁLIDA");
             return InvalidInvoiceExitCode;
+        }
+
+        if (showRawText)
+        {
+            PrintRawText(document);
         }
 
         var settings = DatabaseSettings.FromEnvironment();
@@ -73,6 +87,14 @@ public static class Program
                 draft.Warnings.Add(provider.Warning);
             }
 
+            foreach (ProviderMatch candidate in provider.Candidates)
+            {
+                if (provider.Match?.CompanyID != candidate.CompanyID)
+                {
+                    draft.ProviderCandidates.Add($"{candidate.CompanyID} - {candidate.CompanyName}");
+                }
+            }
+
             if (!string.IsNullOrWhiteSpace(provider.Warning) && provider.Match is not null)
             {
                 draft.Warnings.Add(provider.Warning);
@@ -85,6 +107,41 @@ public static class Program
                 draft.CommercialProjectId = project.CommercialProjectsID;
                 draft.CommercialProjectName = project.Name;
                 draft.CommercialProjectIsValid = project.IsValidForNewInvoice;
+                draft.CommercialProjectValidationError = project.IsDisabled
+                    ? $"El proyecto comercial con ID {projectId} está deshabilitado."
+                    : !project.IsOpen
+                        ? $"El proyecto comercial con ID {projectId} no está disponible para nuevas facturas."
+                        : null;
+            }
+            else
+            {
+                draft.CommercialProjectValidationError =
+                    $"El proyecto comercial con ID {projectId} no existe.";
+            }
+
+
+            ICurrencyReader currencyReader = new CurrencyReader();
+            CurrencyMatch? configuredCurrency = currencyReader.FindById(connection, draft.CurrencyId);
+            draft.ConfiguredCurrencyCode = configuredCurrency?.Code;
+
+            if (!string.IsNullOrWhiteSpace(draft.CurrencyCode))
+            {
+                CurrencyMatch? detectedCurrency = currencyReader.FindByCode(connection, draft.CurrencyCode);
+                draft.DetectedCurrencyId = detectedCurrency?.CurrencyID;
+
+                if (detectedCurrency is null)
+                {
+                    draft.Warnings.Add(
+                        $"La moneda {draft.CurrencyCode} del PDF no existe en dbo.Currency; no se ha asignado ningún ID detectado.");
+                }
+                else if (configuredCurrency is null ||
+                         !string.Equals(detectedCurrency.Code, configuredCurrency.Code, StringComparison.OrdinalIgnoreCase))
+                {
+                    draft.Warnings.Add(
+                        $"La moneda del PDF es {detectedCurrency.Code} (CurrencyID {detectedCurrency.CurrencyID}), " +
+                        $"pero el valor temporal configurado es CurrencyID {draft.CurrencyId}" +
+                        (configuredCurrency is null ? "." : $" ({configuredCurrency.Code})."));
+                }
             }
 
             if (draft.CompanyId.HasValue && draft.InvoiceDate >= new DateTime(1900, 1, 1))
@@ -134,14 +191,17 @@ public static class Program
         Console.WriteLine();
         Console.WriteLine("DATOS DETECTADOS");
         Console.WriteLine($"Proveedor detectado: {draft.ProviderName}");
-        Console.WriteLine($"CIF/NIF/VAT: {MaskIdentifier(draft.SupplierTaxId)}");
+        Console.WriteLine($"CIF/NIF/VAT: {draft.SupplierTaxId ?? "no detectado"}");
         Console.WriteLine($"Número de factura: {draft.InvoiceNumber}");
-        Console.WriteLine($"Fecha: {(draft.InvoiceDate == DateTime.MinValue ? "no detectada" : draft.InvoiceDate.ToString("yyyy-MM-dd"))}");
+        Console.WriteLine($"Fecha: {(draft.InvoiceDate == DateTime.MinValue ? "no detectada" : draft.InvoiceDate.ToString("dd/MM/yyyy"))}");
+        Console.WriteLine($"Fecha de vencimiento: {draft.DueDate?.ToString("dd/MM/yyyy") ?? "no detectada"}");
         Console.WriteLine($"Moneda detectada: {draft.CurrencyCode ?? "no detectada"}");
+        Console.WriteLine($"CurrencyID detectado: {draft.DetectedCurrencyId?.ToString() ?? "no resuelto"}");
 
         Console.WriteLine();
         Console.WriteLine("RESOLUCIONES");
         Console.WriteLine($"Proveedor: {draft.ProviderName} | CompanyID: {draft.CompanyId?.ToString() ?? "no resuelto"}");
+        Console.WriteLine($"Project-id solicitado: {draft.CommercialProjectId?.ToString() ?? "no indicado"}");
         Console.WriteLine($"Proyecto: {draft.CommercialProjectName ?? "no resuelto"} | CommercialProjectsID: {draft.CommercialProjectId?.ToString() ?? "no resuelto"}");
         Console.WriteLine($"Notes: {draft.Notes}");
         Console.WriteLine($"InitDescription: {draft.InitDescription}");
@@ -151,7 +211,7 @@ public static class Program
         foreach (var item in draft.Items.OrderBy(item => item.Position))
         {
             Console.WriteLine(
-                $"{item.Position}. {item.Description} | Cantidad {item.Amount} | Precio {item.UnitPrice} | IVA {item.IVA}% | Total {item.CalculatedTotal:F2}");
+                $"{item.Position}. {item.Description} | Cantidad {item.Amount} | Precio {item.UnitPrice:F2} | IVA {item.IVA}% | Base {item.CalculatedNetAmount:F2} | Total {item.CalculatedTotal:F2}");
         }
 
         Console.WriteLine();
@@ -159,6 +219,9 @@ public static class Program
         Console.WriteLine($"Subtotal: {draft.CalculatedSubtotal:F2}");
         Console.WriteLine($"IVA: {draft.CalculatedTaxTotal:F2}");
         Console.WriteLine($"Total: {draft.CalculatedTotal:F2}");
+        Console.WriteLine($"Subtotal documental: {draft.DocumentSubtotal?.ToString("F2") ?? "no detectado"}");
+        Console.WriteLine($"IVA documental: {draft.DocumentTaxTotal?.ToString("F2") ?? "no detectado"}");
+        Console.WriteLine($"Total documental: {draft.DocumentTotal?.ToString("F2") ?? "no detectado"}");
 
         Console.WriteLine();
         Console.WriteLine("ADVERTENCIAS");
@@ -171,6 +234,15 @@ public static class Program
             foreach (string warning in draft.Warnings.Distinct(StringComparer.Ordinal))
             {
                 Console.WriteLine($"- {warning}");
+            }
+        }
+
+        if (draft.ProviderCandidates.Count > 0)
+        {
+            Console.WriteLine("Candidatos de proveedor (no seleccionados automáticamente):");
+            foreach (string candidate in draft.ProviderCandidates)
+            {
+                Console.WriteLine($"- {candidate}");
             }
         }
 
@@ -191,7 +263,7 @@ public static class Program
         out int projectId,
         out string? error)
     {
-        pdfPath = args.FirstOrDefault(argument => !argument.StartsWith("--", StringComparison.Ordinal));
+        pdfPath = ReadPdfPath(args);
         projectId = 0;
         error = null;
 
@@ -215,17 +287,37 @@ public static class Program
         return true;
     }
 
-    private static string MaskIdentifier(string? value)
+    private static string? ReadPdfPath(string[] args) =>
+        args.Length > 0 && !args[0].StartsWith("--", StringComparison.Ordinal)
+            ? args[0]
+            : null;
+
+    private static int ShowRawText(string? pdfPath)
     {
-        if (string.IsNullOrWhiteSpace(value))
+        if (string.IsNullOrWhiteSpace(pdfPath))
         {
-            return "no detectado";
+            Console.WriteLine("Debe indicar la ruta del PDF antes de --show-raw-text.");
+            return FailureExitCode;
         }
 
-        string compact = new(value.Where(char.IsLetterOrDigit).ToArray());
-        return compact.Length <= 4
-            ? new string('*', compact.Length)
-            : $"{new string('*', compact.Length - 4)}{compact[^4..]}";
+        var document = new PdfDocumentReader().Read(pdfPath);
+        if (!document.IsSuccess)
+        {
+            Console.WriteLine($"No se pudo leer el PDF: {document.ErrorMessage}");
+            return FailureExitCode;
+        }
+
+        PrintRawText(document);
+        return 0;
+    }
+
+    private static void PrintRawText(DocumentReadResult document)
+    {
+        Console.WriteLine("DIAGNÓSTICO: TEXTO EXTRAÍDO DEL PDF");
+        Console.WriteLine("ADVERTENCIA: el texto puede contener datos sensibles del documento.");
+        Console.WriteLine("--- INICIO TEXTO EXTRAÍDO ---");
+        Console.WriteLine(document.ExtractedText);
+        Console.WriteLine("--- FIN TEXTO EXTRAÍDO ---");
     }
 
     private static int ReadPdf(string filePath)
@@ -245,5 +337,6 @@ public static class Program
     }
 
     private static void ShowUsage() =>
-        Console.WriteLine("Uso: dotnet run -- \"ruta-factura.pdf\" --project-id 123 --preview-sql");
+        Console.WriteLine(
+            "Uso: dotnet run -- \"ruta-factura.pdf\" --project-id 123 --preview-sql [--show-raw-text]");
 }
