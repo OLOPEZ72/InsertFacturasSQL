@@ -1,0 +1,95 @@
+# Build output
+[Bb]in/
+[Oo]bj/
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+[Aa][Rr][Mm]/
+[Aa][Rr][Mm]64/
+publish/
+
+# Visual Studio and user-specific files
+.vs/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+*.rsuser
+*.VC.db
+*.VC.VC.opendb
+
+# JetBrains Rider / ReSharper
+.idea/
+_ReSharper*/
+*.DotSettings.user
+
+# VS Code local settings
+.vscode/
+
+# Test, coverage and package artifacts
+TestResults/
+coverage/
+*.coverage
+*.coveragexml
+*.nupkg
+*.snupkg
+packages/
+artifacts/
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+*.local
+*.local.*
+appsettings.Local.json
+appsettings.*.local.json
+appsettings.Development.json
+appsettings.*.Development.json
+appsettings.Staging.json
+appsettings.Production.json
+Properties/launchSettings.json
+secrets.json
+*.secrets.json
+connections*.json
+*.pfx
+*.p12
+*.snk
+*.key
+*.pem
+
+# Local data and exports
+JSON/
+Facturas/
+facturas/
+Invoices/
+invoices/
+local-data/
+private/
+sensitive/
+exports/
+factura*.json
+invoice*.json
+*.csv
+*.xls
+*.xlsx
+*.pdf
+*.zip
+*.lnk
+
+# Logs, caches, backups and temporary files
+[Ll]ogs/
+*.log
+.cache/
+*.cache
+*.tmp
+*.temp
+*.bak
+*.old
+~$*
+
+# OS-generated files
+.DS_Store
+Thumbs.db
+Desktop.ini
