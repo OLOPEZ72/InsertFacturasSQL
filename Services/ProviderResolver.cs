@@ -108,8 +108,7 @@ ORDER BY CompanyID;
 
         if (allCandidates.Count == 1)
         {
-            var match = allCandidates.Values.Single();
-            return new ProviderResolution(match, [match], "Proveedor resuelto mediante coincidencia parcial controlada.");
+            return new ProviderResolution(null, allCandidates.Values.ToList(), "La coincidencia parcial no tiene confianza suficiente; confirme el proveedor.");
         }
 
         return allCandidates.Count > 1

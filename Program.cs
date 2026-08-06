@@ -125,12 +125,11 @@ public static class Program
 
 
             ICurrencyReader currencyReader = new CurrencyReader();
+            CurrencyMatch? configuredCurrency;
             if (currencyId.HasValue) draft.CurrencyId = currencyId.Value;
-            CurrencyMatch? configuredCurrency = currencyReader.FindById(connection, draft.CurrencyId);
+            configuredCurrency = currencyReader.FindById(connection, draft.CurrencyId);
             if (currencyId.HasValue && configuredCurrency is null)
                 draft.Warnings.Add($"La moneda confirmada manualmente con CurrencyID {currencyId.Value} no existe.");
-            draft.ConfiguredCurrencyCode = configuredCurrency?.Code;
-
             if (!string.IsNullOrWhiteSpace(draft.CurrencyCode))
             {
                 CurrencyMatch? detectedCurrency = currencyReader.FindByCode(connection, draft.CurrencyCode);
@@ -141,15 +140,17 @@ public static class Program
                     draft.Warnings.Add(
                         $"La moneda {draft.CurrencyCode} del PDF no existe en dbo.Currency; no se ha asignado ningún ID detectado.");
                 }
-                else if (configuredCurrency is null ||
-                         !string.Equals(detectedCurrency.Code, configuredCurrency.Code, StringComparison.OrdinalIgnoreCase))
+                else
                 {
-                    draft.Warnings.Add(
-                        $"La moneda del PDF es {detectedCurrency.Code} (CurrencyID {detectedCurrency.CurrencyID}), " +
-                        $"pero el valor temporal configurado es CurrencyID {draft.CurrencyId}" +
-                        (configuredCurrency is null ? "." : $" ({configuredCurrency.Code})."));
+                    draft.CurrencyId = detectedCurrency.CurrencyID;
+                    configuredCurrency = detectedCurrency;
                 }
             }
+            else
+            {
+                draft.Warnings.Add("No se detectó moneda en el PDF; se utiliza temporalmente CurrencyID 1.");
+            }
+            draft.ConfiguredCurrencyCode = configuredCurrency?.Code;
 
             if (draft.CompanyId.HasValue && draft.InvoiceDate >= new DateTime(1900, 1, 1))
             {
@@ -204,7 +205,7 @@ public static class Program
         Console.WriteLine($"Número de factura: {draft.InvoiceNumber}");
         Console.WriteLine($"Fecha: {(draft.InvoiceDate == DateTime.MinValue ? "no detectada" : draft.InvoiceDate.ToString("dd/MM/yyyy"))}");
         Console.WriteLine($"Fecha de vencimiento: {draft.DueDate?.ToString("dd/MM/yyyy") ?? "no detectada"}");
-        Console.WriteLine($"Moneda detectada: {draft.CurrencyCode ?? "no detectada"} | CurrencyID {(draft.CurrencyConfirmedManually ? "confirmado manualmente" : "configurado")}: {draft.CurrencyId}");
+        Console.WriteLine($"Moneda detectada: {draft.CurrencyCode ?? "no detectada"} | CurrencyID {(draft.CurrencyConfirmedManually ? "confirmado manualmente" : "resuelto automáticamente")}: {draft.CurrencyId}");
         Console.WriteLine($"CurrencyID detectado: {draft.DetectedCurrencyId?.ToString() ?? "no resuelto"}");
 
         Console.WriteLine();
@@ -288,6 +289,12 @@ public static class Program
         if (!TryReadOptionalId(args, "--provider-id", out providerId, out error) ||
             !TryReadOptionalId(args, "--currency-id", out currencyId, out error) ||
             !TryReadOptionalId(args, "--project-id", out projectId, out error)) return false;
+
+        if (!projectId.HasValue)
+        {
+            error = "--project-id debe contener un entero positivo.";
+            return false;
+        }
 
         return true;
     }

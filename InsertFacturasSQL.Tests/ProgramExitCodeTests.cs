@@ -105,6 +105,24 @@ public sealed class ProgramExitCodeTests : IDisposable
         }
     }
 
+    [Fact]
+    public void Main_WithoutProjectId_RejectsPreview()
+    {
+        using var output = new StringWriter();
+        TextWriter previous = Console.Out;
+        Console.SetOut(output);
+        try
+        {
+            int exitCode = Program.Main(["invoice.pdf", "--preview-sql"]);
+            Assert.NotEqual(0, exitCode);
+            Assert.Contains("--project-id", output.ToString());
+        }
+        finally
+        {
+            Console.SetOut(previous);
+        }
+    }
+
     public void Dispose()
     {
         Directory.Delete(_testDirectory, recursive: true);
