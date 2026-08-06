@@ -141,6 +141,29 @@ Importe adeudado: 121,00 EUR
         Assert.Equal("EUR", draft.CurrencyCode);
     }
 
+    [Fact]
+    public void Build_DoesNotTreatCustomerNameOrCifAsIssuer()
+    {
+        var document = CreateSyntheticDocument("""
+FACTURA
+Carrefour
+Proveedor: Carrefour
+Cliente
+NOMBRE: Ibys Technologies SA
+CIF: A79286506
+Factura: CAR-2026-1
+Fecha: 06/08/2026
+ITEM|Compra|1|10|21|10
+""");
+
+        SupplierInvoiceDraft draft = new SupplierInvoiceDraftBuilder().Build(document, 321);
+
+        Assert.Equal("Carrefour", draft.ProviderName);
+        Assert.Null(draft.SupplierTaxId);
+        Assert.Contains("Ibys Technologies SA", draft.RecipientCandidateBlock);
+        Assert.Contains("cabecera", draft.IssuerSelectionReason, StringComparison.OrdinalIgnoreCase);
+    }
+
     [Theory]
     [InlineData("1 de enero de 2026", 1)]
     [InlineData("1 de febrero de 2026", 2)]

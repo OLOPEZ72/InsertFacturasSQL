@@ -33,11 +33,13 @@ public sealed class SupplierInvoiceDraftBuilder
 
         string text = document.ExtractedText ?? "";
         string[] lines = GetLines(text);
-        string[] issuerLines = GetIssuerBlock(lines);
+        int recipientBoundary = FindRecipientBoundary(lines);
+        string[] issuerLines = recipientBoundary > 0 ? lines[..recipientBoundary] : lines;
+        string[] recipientLines = recipientBoundary >= 0 ? lines[recipientBoundary..Math.Min(lines.Length, recipientBoundary + 12)] : [];
         string providerName = ReadLabeledValue(issuerLines, "Proveedor", "Supplier", "Emisor") ??
                               FindIssuerCompanyName(issuerLines) ??
                               "";
-        string? taxId = ReadTaxIdentifier(issuerLines) ?? ReadTaxIdentifier(lines);
+        string? taxId = ReadTaxIdentifier(issuerLines);
         string invoiceNumber = ReadLabeledValue(
             lines,
             "Número de factura",
@@ -80,6 +82,13 @@ public sealed class SupplierInvoiceDraftBuilder
         {
             SupplierTaxId = taxId,
             ProviderName = providerName,
+            IssuerCandidateBlock = string.Join(" | ", issuerLines.Where(line => !string.IsNullOrWhiteSpace(line)).Take(12)),
+            RecipientCandidateBlock = string.Join(" | ", recipientLines.Where(line => !string.IsNullOrWhiteSpace(line))),
+            IssuerSelectionReason = providerName.Length > 0
+                ? (ReadLabeledValue(issuerLines, "Proveedor", "Supplier", "Emisor") is not null
+                    ? "Etiqueta de emisor en la cabecera superior."
+                    : "Razón social seleccionada en el bloque superior anterior al cliente.")
+                : "No se encontró un emisor inequívoco en la cabecera.",
             InvoiceNumber = invoiceNumber,
             InvoiceDate = invoiceDate,
             DueDate = dueDate,
@@ -373,6 +382,17 @@ public sealed class SupplierInvoiceDraftBuilder
         return boundary > 0 ? lines[..boundary] : lines;
     }
 
+    private static int FindRecipientBoundary(string[] lines) => Array.FindIndex(lines, line =>
+    {
+        string normalized = NormalizeText(line).TrimEnd(':');
+        return normalized is "CLIENTE" or "RECEPTOR" or "DESTINATARIO" ||
+               normalized.StartsWith("FACTURAR A", StringComparison.Ordinal) ||
+               normalized.StartsWith("FACTURADO A", StringComparison.Ordinal) ||
+               normalized.StartsWith("BILL TO", StringComparison.Ordinal) ||
+               normalized.StartsWith("NOMBRE", StringComparison.Ordinal) ||
+               normalized.StartsWith("CIF DEL CLIENTE", StringComparison.Ordinal);
+    });
+
     private static string? FindIssuerCompanyName(string[] issuerLines)
     {
         var suffixPattern = new Regex(
@@ -384,7 +404,9 @@ public sealed class SupplierInvoiceDraftBuilder
             Match match = suffixPattern.Match(line);
             if (line.Length is > 2 and <= 500 &&
                 match.Success &&
-                !NormalizeText(line).StartsWith("FACTURA", StringComparison.Ordinal))
+                !NormalizeText(line).StartsWith("FACTURA", StringComparison.Ordinal) &&
+                !NormalizeText(line).StartsWith("NOMBRE", StringComparison.Ordinal) &&
+                !NormalizeText(line).StartsWith("CIF", StringComparison.Ordinal))
             {
                 return match.Groups["company"].Value.Trim();
             }

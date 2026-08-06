@@ -36,6 +36,7 @@ ORDER BY CompanyID;
         string? tradeName)
     {
         string normalizedTaxId = NormalizeIdentifier(taxId);
+        bool taxWasProvided = normalizedTaxId.Length > 0;
         if (normalizedTaxId.Length > 0)
         {
             var taxMatches = ReadMatches(connection, SelectByTaxIdSql, "@TaxId", normalizedTaxId);
@@ -50,6 +51,14 @@ ORDER BY CompanyID;
                     null,
                     taxMatches,
                     "El CIF/NIF/VAT coincide con varios proveedores activos.");
+            }
+
+            if (taxMatches.Count == 0)
+            {
+                return new ProviderResolution(
+                    null,
+                    [],
+                    "El CIF/NIF/VAT exacto no existe entre los proveedores activos; no se selecciona ninguna empresa por nombre.");
             }
         }
 
@@ -75,11 +84,12 @@ ORDER BY CompanyID;
 
             foreach (var candidate in candidates)
             {
-                allCandidates[candidate.CompanyID] = candidate with { MatchType = "NamePartial" };
+                if (!taxWasProvided)
+                    allCandidates[candidate.CompanyID] = candidate with { MatchType = "NamePartial" };
             }
         }
 
-        if (allCandidates.Count == 0)
+        if (allCandidates.Count == 0 && !taxWasProvided)
         {
             string? token = names
                 .Select(FindSignificantToken)

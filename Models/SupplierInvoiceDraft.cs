@@ -4,6 +4,9 @@ public sealed class SupplierInvoiceDraft
 {
     public string? SupplierTaxId { get; init; }
     public string ProviderName { get; set; } = "";
+    public string IssuerCandidateBlock { get; set; } = "";
+    public string RecipientCandidateBlock { get; set; } = "";
+    public string IssuerSelectionReason { get; set; } = "";
     public string InvoiceNumber { get; init; } = "";
     public DateTime InvoiceDate { get; init; }
     public DateTime? DueDate { get; init; }
