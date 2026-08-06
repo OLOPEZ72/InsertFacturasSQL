@@ -7,14 +7,15 @@ namespace InsertFacturasSQL;
 
 public static class Program
 {
-    public static void Main(string[] args)
+    private const int PdfReadFailureExitCode = 1;
+
+    public static int Main(string[] args)
     {
         Console.WriteLine("Iniciando programa...");
 
         if (args.Length > 0)
         {
-            ReadPdf(args[0]);
-            return;
+            return ReadPdf(args[0]);
         }
 
         string folderPath = Path.Combine(Directory.GetCurrentDirectory(), "JSON");
@@ -25,7 +26,7 @@ public static class Program
         {
             Console.WriteLine(
                 $"No se ha configurado la variable de entorno {DatabaseSettings.ConnectionStringEnvironmentVariable}.");
-            return;
+            return 0;
         }
 
         try
@@ -33,14 +34,14 @@ public static class Program
             if (!Directory.Exists(folderPath))
             {
                 Console.WriteLine("Carpeta no encontrada");
-                return;
+                return 0;
             }
 
             var files = Directory.GetFiles(folderPath, "*.json");
             if (files.Length == 0)
             {
                 Console.WriteLine("No hay archivos JSON");
-                return;
+                return 0;
             }
 
             var validator = new InvoiceValidator();
@@ -84,9 +85,10 @@ public static class Program
 
         Console.WriteLine("Fin del proceso");
         Console.ReadKey();
+        return 0;
     }
 
-    private static void ReadPdf(string filePath)
+    private static int ReadPdf(string filePath)
     {
         IDocumentReader documentReader = new PdfDocumentReader();
         var result = documentReader.Read(filePath);
@@ -97,11 +99,12 @@ public static class Program
         if (!result.IsSuccess)
         {
             Console.WriteLine($"Error: {result.ErrorMessage}");
-            return;
+            return PdfReadFailureExitCode;
         }
 
         Console.WriteLine($"Páginas: {result.PageCount}");
         Console.WriteLine("Texto extraído:");
         Console.WriteLine(result.ExtractedText);
+        return 0;
     }
 }
