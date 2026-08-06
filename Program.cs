@@ -11,6 +11,12 @@ public static class Program
     {
         Console.WriteLine("Iniciando programa...");
 
+        if (args.Length > 0)
+        {
+            ReadPdf(args[0]);
+            return;
+        }
+
         string folderPath = Path.Combine(Directory.GetCurrentDirectory(), "JSON");
         Console.WriteLine($"Buscando JSON en: {folderPath}");
 
@@ -78,5 +84,24 @@ public static class Program
 
         Console.WriteLine("Fin del proceso");
         Console.ReadKey();
+    }
+
+    private static void ReadPdf(string filePath)
+    {
+        IDocumentReader documentReader = new PdfDocumentReader();
+        var result = documentReader.Read(filePath);
+
+        Console.WriteLine($"Archivo: {result.FileName}");
+        Console.WriteLine($"Ruta: {result.FilePath}");
+
+        if (!result.IsSuccess)
+        {
+            Console.WriteLine($"Error: {result.ErrorMessage}");
+            return;
+        }
+
+        Console.WriteLine($"Páginas: {result.PageCount}");
+        Console.WriteLine("Texto extraído:");
+        Console.WriteLine(result.ExtractedText);
     }
 }
