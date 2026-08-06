@@ -164,6 +164,34 @@ ITEM|Compra|1|10|21|10
         Assert.Contains("cabecera", draft.IssuerSelectionReason, StringComparison.OrdinalIgnoreCase);
     }
 
+    [Fact]
+    public void Build_ParsesRetailTableLabeledDateAndTaxSummaryWithoutGuessingProvider()
+    {
+        var document = CreateSyntheticDocument("""
+FECHA FACTURA: 14/04/2026
+FECHA PEDIDO: 13/04/2026
+8431876011937 LECHE SEMI CRF 1L 60,000 52,80 0,00 52,80 50,77 4,00
+IVA 4,00 50,77 2,03 0,00 0,00 52,80
+TOTAL IMPUESTOS INCLUIDOS 52,80 EUR
+BASE IMPONIBLE GASTOS DE ENVÍO 3,30 EUR
+""");
+
+        SupplierInvoiceDraft draft = new SupplierInvoiceDraftBuilder().Build(document, 321);
+        SupplierInvoiceItemDraft item = Assert.Single(draft.Items);
+
+        Assert.Equal(new DateTime(2026, 4, 14), draft.InvoiceDate);
+        Assert.Equal("LECHE SEMI CRF 1L", item.Description);
+        Assert.Equal(60m, item.Amount);
+        Assert.Equal(4m, item.IVA);
+        Assert.Equal(50.77m, item.DocumentLineNetAmount);
+        Assert.Equal(52.80m, item.DocumentLineTotal);
+        Assert.Equal(50.77m, draft.DocumentSubtotal);
+        Assert.Equal(2.03m, draft.DocumentTaxTotal);
+        Assert.Equal(52.80m, draft.DocumentTotal);
+        Assert.Empty(draft.ProviderName);
+        Assert.Contains("imagen o logotipo", draft.Warnings.Single(w => w.Contains("imagen", StringComparison.OrdinalIgnoreCase)));
+    }
+
     [Theory]
     [InlineData("1 de enero de 2026", 1)]
     [InlineData("1 de febrero de 2026", 2)]

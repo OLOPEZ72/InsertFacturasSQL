@@ -50,6 +50,8 @@ public sealed class SupplierInvoiceDraftBuilder
         DateTime invoiceDate = TryParseDate(ReadLabeledValue(
             lines,
             "Fecha de emisión",
+            "Fecha factura",
+            "Fecha de factura",
             "Fecha de emision",
             "Issue date",
             "Invoice date",
@@ -60,6 +62,7 @@ public sealed class SupplierInvoiceDraftBuilder
             "Due date"));
         string? currencyCode = DetectCurrency(text);
         var items = ParseItems(lines, commercialProjectId ?? 0);
+        (decimal? taxBase, decimal? taxAmount, decimal? taxTotal) = ReadRetailTaxSummary(lines);
         string? explicitDescription = ReadLabeledValue(
             lines,
             "Descripción general",
@@ -95,12 +98,17 @@ public sealed class SupplierInvoiceDraftBuilder
             MainDescription = mainDescription,
             CurrencyCode = currencyCode,
             PaymentNotes = ReadLabeledValue(lines, "Notas de pago", "Payment notes"),
-            DocumentSubtotal = ReadAmount(lines, "Subtotal", "Total sin impuestos", "Base imponible"),
-            DocumentTaxTotal = ReadAmount(lines, "IVA total", "Tax amount", "Tax total", "Impuestos"),
-            DocumentTotal = ReadAmount(lines, "Importe adeudado", "Amount due", "Total", "Invoice total"),
+            DocumentSubtotal = taxBase ?? ReadAmount(lines, "Subtotal", "Total sin impuestos", "Base imponible"),
+            DocumentTaxTotal = taxAmount ?? ReadAmount(lines, "IVA total", "Tax amount", "Tax total", "Impuestos"),
+            DocumentTotal = taxTotal ?? ReadAmount(lines, "Importe adeudado", "Amount due", "Total impuestos incluidos", "Total", "Invoice total"),
             CommercialProjectId = commercialProjectId,
             Items = items
         };
+
+        if (string.IsNullOrWhiteSpace(draft.ProviderName) && string.IsNullOrWhiteSpace(draft.SupplierTaxId))
+        {
+            draft.Warnings.Add("El proveedor parece estar representado únicamente como imagen o logotipo; use --provider-id o será necesario OCR.");
+        }
 
         if (draft.DocumentSubtotal is null || draft.DocumentTaxTotal is null || draft.DocumentTotal is null)
         {
@@ -327,12 +335,38 @@ public sealed class SupplierInvoiceDraftBuilder
         int commercialProjectId)
     {
         var items = new List<SupplierInvoiceItemDraft>();
+        var retailRowPattern = new Regex(
+            @"^(?<ean>\d{8,14})\s+(?<description>.+?)\s+(?<amount>\d[\d.,]*)\s+(?<price>\d[\d.,]*)\s+(?<discount>\d[\d.,]*)\s+(?<total>\d[\d.,]*)\s+(?<base>\d[\d.,]*)\s+(?<iva>\d[\d.,]*)\s*$",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
         var rowPattern = new Regex(
             @"^(?<description>.*?)\s*(?<amount>\d+(?:[.,]\d+)?)\s+(?<price>\d[\d.,]*)\s*(?:US\$|USD|\$|EUR|€|GBP|£)?\s+(?<iva>\d+(?:[.,]\d+)?)\s*%\s+(?<base>\d[\d.,]*)\s*(?:US\$|USD|\$|EUR|€|GBP|£)?\s*$",
             RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
         for (int index = 0; index < lines.Length; index++)
         {
+            Match retail = retailRowPattern.Match(lines[index]);
+            if (retail.Success &&
+                TryParseDecimal(retail.Groups["amount"].Value, out decimal retailAmount) &&
+                TryParseDecimal(retail.Groups["price"].Value, out decimal retailPrice) &&
+                TryParseDecimal(retail.Groups["discount"].Value, out decimal retailDiscount) &&
+                TryParseDecimal(retail.Groups["total"].Value, out decimal retailTotal) &&
+                TryParseDecimal(retail.Groups["base"].Value, out decimal retailBase) &&
+                TryParseDecimal(retail.Groups["iva"].Value, out decimal retailIva))
+            {
+                items.Add(new SupplierInvoiceItemDraft
+                {
+                    Position = items.Count + 1,
+                    Description = retail.Groups["description"].Value.Trim(),
+                    Amount = retailAmount,
+                    UnitPrice = retailPrice,
+                    DiscountPercent = retailDiscount,
+                    DocumentLineTotal = retailTotal,
+                    DocumentLineNetAmount = retailBase,
+                    IVA = retailIva,
+                    CommercialProjectId = commercialProjectId
+                });
+                continue;
+            }
             Match match = rowPattern.Match(lines[index]);
             if (!match.Success ||
                 !TryParseDecimal(match.Groups["amount"].Value, out decimal amount) ||
@@ -368,6 +402,25 @@ public sealed class SupplierInvoiceDraftBuilder
         }
 
         return items;
+    }
+
+    private static (decimal? Base, decimal? Tax, decimal? Total) ReadRetailTaxSummary(string[] lines)
+    {
+        foreach (string line in lines)
+        {
+            if (!NormalizeText(line).StartsWith("IVA ", StringComparison.Ordinal)) continue;
+            string[] values = Regex.Matches(line, @"\d[\d.,]*")
+                .Select(match => match.Value)
+                .ToArray();
+            if (values.Length >= 6 &&
+                TryParseDecimal(values[1], out decimal basis) &&
+                TryParseDecimal(values[2], out decimal tax) &&
+                TryParseDecimal(values[^1], out decimal total))
+            {
+                return (basis, tax, total);
+            }
+        }
+        return (null, null, null);
     }
 
     private static string[] GetIssuerBlock(string[] lines)
