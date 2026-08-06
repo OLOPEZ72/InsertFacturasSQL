@@ -1,86 +1,181 @@
-using System.Text.RegularExpressions;
+using System.Globalization;
+using System.Text;
 using Microsoft.Data.SqlClient;
 
 namespace InsertFacturasSQL.Services;
 
-public sealed class ProviderResolver
+public sealed class ProviderResolver : IProviderResolver
 {
-    public ProviderMatch? Resolve(SqlConnection connection, SqlTransaction transaction, string providerName)
+    private const string SelectByTaxIdSql = """
+SELECT TOP (10) CompanyID, Name
+FROM dbo.Companies
+WHERE Provider = 1
+  AND Disabled IS NULL
+  AND UPPER(REPLACE(REPLACE(REPLACE(REPLACE(LTRIM(RTRIM(CIF)), ' ', ''), '-', ''), '.', ''), '/', '')) = @TaxId
+ORDER BY CompanyID;
+""";
+
+    private const string SelectByNameSql = """
+SELECT TOP (10) CompanyID, Name
+FROM dbo.Companies
+WHERE Provider = 1
+  AND Disabled IS NULL
+  AND Name LIKE @NamePattern ESCAPE '\'
+ORDER BY CompanyID;
+""";
+
+    public ProviderResolution Resolve(
+        SqlConnection connection,
+        string? taxId,
+        string? legalName,
+        string? tradeName)
     {
-        var companies = GetCompanies(connection, transaction);
-        string normalized = Normalize(providerName);
-
-        var exact = companies.FirstOrDefault(company => Normalize(company.Name) == normalized);
-        if (exact.CompanyID != 0)
+        string normalizedTaxId = NormalizeIdentifier(taxId);
+        if (normalizedTaxId.Length > 0)
         {
-            return new ProviderMatch(exact.CompanyID, exact.Name, "Exact");
-        }
-
-        var partial = companies.FirstOrDefault(company =>
-            Normalize(company.Name).Contains(normalized) ||
-            normalized.Contains(Normalize(company.Name)));
-
-        if (partial.CompanyID != 0)
-        {
-            return new ProviderMatch(partial.CompanyID, partial.Name, "Partial");
-        }
-
-        var tokens = GetTokens(providerName);
-        var ranked = companies
-            .Select(company => new
+            var taxMatches = ReadMatches(connection, SelectByTaxIdSql, "@TaxId", normalizedTaxId);
+            if (taxMatches.Count == 1)
             {
-                company.CompanyID,
-                company.Name,
-                Score = tokens.Count(token => GetTokens(company.Name).Contains(token))
-            })
-            .OrderByDescending(company => company.Score)
-            .FirstOrDefault();
+                return new ProviderResolution(taxMatches[0] with { MatchType = "TaxIdExact" }, taxMatches, null);
+            }
 
-        if (ranked is not null && ranked.Score > 0)
-        {
-            return new ProviderMatch(ranked.CompanyID, ranked.Name, "Token");
+            if (taxMatches.Count > 1)
+            {
+                return new ProviderResolution(
+                    null,
+                    taxMatches,
+                    "El CIF/NIF/VAT coincide con varios proveedores activos.");
+            }
         }
 
-        var fallback = companies.FirstOrDefault(company => company.Name.ToUpper().Trim() == "VARIOS PROVEEDORES");
+        var names = new[] { legalName, tradeName }
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Select(value => value!.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase);
 
-        return fallback.CompanyID != 0
-            ? new ProviderMatch(fallback.CompanyID, fallback.Name, "Fallback")
-            : null;
+        var allCandidates = new Dictionary<int, ProviderMatch>();
+        foreach (string name in names)
+        {
+            string pattern = $"%{EscapeLikePattern(name)}%";
+            var candidates = ReadMatches(connection, SelectByNameSql, "@NamePattern", pattern);
+
+            var exact = candidates
+                .Where(candidate => NormalizeName(candidate.CompanyName) == NormalizeName(name))
+                .ToList();
+
+            if (exact.Count == 1)
+            {
+                return new ProviderResolution(exact[0] with { MatchType = "NameExact" }, exact, null);
+            }
+
+            foreach (var candidate in candidates)
+            {
+                allCandidates[candidate.CompanyID] = candidate with { MatchType = "NamePartial" };
+            }
+        }
+
+        if (allCandidates.Count == 1)
+        {
+            var match = allCandidates.Values.Single();
+            return new ProviderResolution(match, [match], "Proveedor resuelto mediante coincidencia parcial controlada.");
+        }
+
+        return allCandidates.Count > 1
+            ? new ProviderResolution(null, allCandidates.Values.ToList(), "La búsqueda por nombre no es inequívoca.")
+            : new ProviderResolution(null, [], "No se encontró un proveedor activo.");
     }
 
-    private static List<(int CompanyID, string Name)> GetCompanies(
+    // Compatibilidad con el importador heredado. Program.cs ya no expone ese flujo de escritura.
+    public ProviderMatch? Resolve(
         SqlConnection connection,
-        SqlTransaction transaction)
+        SqlTransaction transaction,
+        string providerName)
     {
-        var companies = new List<(int, string)>();
+        const string sql = """
+SELECT TOP (10) CompanyID, Name
+FROM dbo.Companies
+WHERE Provider = 1
+  AND Disabled IS NULL
+  AND Name LIKE @NamePattern ESCAPE '\'
+ORDER BY CompanyID;
+""";
 
-        using var command = new SqlCommand(
-            "SELECT CompanyID, Name FROM Companies WHERE Disabled IS NULL",
-            connection,
-            transaction);
+        using var command = new SqlCommand(sql, connection, transaction);
+        command.Parameters.Add("@NamePattern", System.Data.SqlDbType.NVarChar, 255).Value =
+            $"%{EscapeLikePattern(providerName)}%";
+
         using var reader = command.ExecuteReader();
-
+        var matches = new List<ProviderMatch>();
         while (reader.Read())
         {
-            companies.Add((reader.GetInt32(0), reader.IsDBNull(1) ? "" : reader.GetString(1)));
+            matches.Add(new ProviderMatch(
+                reader.GetInt32(0),
+                reader.IsDBNull(1) ? "" : reader.GetString(1),
+                "LegacyName"));
         }
 
-        return companies;
+        var exact = matches.FirstOrDefault(match => NormalizeName(match.CompanyName) == NormalizeName(providerName));
+        return exact ?? (matches.Count == 1 ? matches[0] : null);
     }
 
-    private static string Normalize(string input)
+    private static List<ProviderMatch> ReadMatches(
+        SqlConnection connection,
+        string sql,
+        string parameterName,
+        string parameterValue)
     {
-        input = input.ToUpper();
-        input = Regex.Replace(input, @"[^\w\s]", " ");
-        return Regex.Replace(input, @"\s+", " ").Trim();
+        using var command = new SqlCommand(sql, connection);
+        command.Parameters.Add(parameterName, System.Data.SqlDbType.NVarChar, 255).Value = parameterValue;
+
+        using var reader = command.ExecuteReader();
+        var matches = new List<ProviderMatch>();
+        while (reader.Read())
+        {
+            matches.Add(new ProviderMatch(
+                reader.GetInt32(0),
+                reader.IsDBNull(1) ? "" : reader.GetString(1),
+                "Candidate"));
+        }
+
+        return matches;
     }
 
-    private static List<string> GetTokens(string input)
+    private static string EscapeLikePattern(string value) =>
+        value.Replace("\\", "\\\\", StringComparison.Ordinal)
+            .Replace("%", "\\%", StringComparison.Ordinal)
+            .Replace("_", "\\_", StringComparison.Ordinal)
+            .Replace("[", "\\[", StringComparison.Ordinal);
+
+    private static string NormalizeIdentifier(string? value)
     {
-        return Normalize(input)
-            .Split(' ', StringSplitOptions.RemoveEmptyEntries)
-            .Where(token => token.Length > 2)
-            .ToList();
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return "";
+        }
+
+        return new string(value
+            .Where(char.IsLetterOrDigit)
+            .Select(char.ToUpperInvariant)
+            .ToArray());
+    }
+
+    private static string NormalizeName(string value)
+    {
+        string decomposed = value.Normalize(NormalizationForm.FormD);
+        var result = new StringBuilder(decomposed.Length);
+
+        foreach (char character in decomposed)
+        {
+            UnicodeCategory category = CharUnicodeInfo.GetUnicodeCategory(character);
+            if (category == UnicodeCategory.NonSpacingMark)
+            {
+                continue;
+            }
+
+            result.Append(char.IsLetterOrDigit(character) ? char.ToUpperInvariant(character) : ' ');
+        }
+
+        return string.Join(' ', result.ToString().Split(' ', StringSplitOptions.RemoveEmptyEntries));
     }
 }
 

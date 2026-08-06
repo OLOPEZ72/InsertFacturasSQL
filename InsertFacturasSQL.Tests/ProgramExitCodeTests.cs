@@ -38,6 +38,27 @@ public sealed class ProgramExitCodeTests : IDisposable
         Assert.NotEqual(0, exitCode);
     }
 
+    [Fact]
+    public void Main_WithoutPreviewArguments_DoesNotStartLegacyDatabaseImport()
+    {
+        using var output = new StringWriter();
+        TextWriter previous = Console.Out;
+        Console.SetOut(output);
+
+        try
+        {
+            int exitCode = Program.Main([]);
+
+            Assert.NotEqual(0, exitCode);
+            Assert.Contains("--preview-sql", output.ToString());
+            Assert.DoesNotContain("Insert OK", output.ToString());
+        }
+        finally
+        {
+            Console.SetOut(previous);
+        }
+    }
+
     public void Dispose()
     {
         Directory.Delete(_testDirectory, recursive: true);
