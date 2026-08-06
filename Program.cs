@@ -172,6 +172,7 @@ public static class Program
         {
             Console.WriteLine();
             Console.WriteLine("Script SQL: no generado porque la factura no es válida.");
+            Console.Write(SupplierInvoiceValidationReport.Build(draft, false).Text);
             Console.WriteLine("Resultado: NO VÁLIDA");
             Console.WriteLine(SupplierInvoiceSqlPreviewGenerator.PreviewWarning);
             return InvalidInvoiceExitCode;
@@ -187,6 +188,7 @@ public static class Program
                 $"{parameter.Name} | {parameter.TypeDescription} | {parameter.DisplayValue}");
         }
 
+        Console.Write(SupplierInvoiceValidationReport.Build(draft, true).Text);
         Console.WriteLine();
         Console.WriteLine("Resultado: LISTA PARA INSERTAR");
         Console.WriteLine(SupplierInvoiceSqlPreviewGenerator.PreviewWarning);
