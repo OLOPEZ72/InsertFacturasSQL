@@ -19,6 +19,7 @@ public static class Program
 
         bool showRawText = args.Contains("--show-raw-text", StringComparer.OrdinalIgnoreCase);
         bool previewSql = args.Contains("--preview-sql", StringComparer.OrdinalIgnoreCase);
+        bool useAi = args.Contains("--use-ai", StringComparer.OrdinalIgnoreCase);
         string? requestedPdf = ReadPdfPath(args);
 
         if (showRawText && !previewSql)
@@ -33,10 +34,10 @@ public static class Program
             return FailureExitCode;
         }
 
-        return RunSqlPreview(pdfPath!, providerId, currencyId, projectId, showRawText);
+        return RunSqlPreview(pdfPath!, providerId, currencyId, projectId, showRawText, useAi);
     }
 
-    private static int RunSqlPreview(string pdfPath, int? providerId, int? currencyId, int? projectId, bool showRawText)
+    private static int RunSqlPreview(string pdfPath, int? providerId, int? currencyId, int? projectId, bool showRawText, bool useAi)
     {
         Console.WriteLine(SupplierInvoiceSqlPreviewGenerator.PreviewWarning);
 
@@ -64,6 +65,21 @@ public static class Program
 
         var builder = new SupplierInvoiceDraftBuilder();
         SupplierInvoiceDraft draft = builder.Build(document, projectId);
+        if (useAi)
+        {
+            AiExtractionResult aiResult = new OpenAiInvoiceExtractor().Extract(
+                document.ExtractedText,
+                Environment.GetEnvironmentVariable("OPENAI_API_KEY"));
+            if (aiResult.Extraction is not null)
+            {
+                OpenAiInvoiceExtractor.MergeIntoDraft(draft, aiResult.Extraction);
+                draft.Warnings.Add("Extracción opcional con OpenAI aplicada como complemento del parser local.");
+            }
+            else if (!string.IsNullOrWhiteSpace(aiResult.Error))
+            {
+                draft.Warnings.Add(aiResult.Error);
+            }
+        }
         draft.ProviderConfirmedManually = providerId.HasValue;
         draft.CurrencyConfirmedManually = currencyId.HasValue;
         draft.ProjectConfirmedManually = projectId.HasValue;
@@ -368,5 +384,5 @@ public static class Program
 
     private static void ShowUsage() =>
         Console.WriteLine(
-            "Uso: dotnet run -- \"ruta-factura.pdf\" --project-id 123 --preview-sql [--provider-id 1] [--currency-id 2] [--show-raw-text]");
+            "Uso: dotnet run -- \"ruta-factura.pdf\" --project-id 123 --preview-sql [--provider-id 1] [--currency-id 2] [--use-ai] [--show-raw-text]");
 }

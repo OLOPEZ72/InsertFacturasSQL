@@ -2,21 +2,21 @@ namespace InsertFacturasSQL.Models;
 
 public sealed class SupplierInvoiceDraft
 {
-    public string? SupplierTaxId { get; init; }
+    public string? SupplierTaxId { get; set; }
     public string ProviderName { get; set; } = "";
     public string IssuerCandidateBlock { get; set; } = "";
     public string RecipientCandidateBlock { get; set; } = "";
     public string IssuerSelectionReason { get; set; } = "";
-    public string InvoiceNumber { get; init; } = "";
-    public DateTime InvoiceDate { get; init; }
-    public DateTime? DueDate { get; init; }
-    public string MainDescription { get; init; } = "";
-    public string? CurrencyCode { get; init; }
+    public string InvoiceNumber { get; set; } = "";
+    public DateTime InvoiceDate { get; set; }
+    public DateTime? DueDate { get; set; }
+    public string MainDescription { get; set; } = "";
+    public string? CurrencyCode { get; set; }
     public DateTime? PaymentDate { get; init; }
     public string? PaymentNotes { get; init; }
-    public decimal? DocumentSubtotal { get; init; }
-    public decimal? DocumentTaxTotal { get; init; }
-    public decimal? DocumentTotal { get; init; }
+    public decimal? DocumentSubtotal { get; set; }
+    public decimal? DocumentTaxTotal { get; set; }
+    public decimal? DocumentTotal { get; set; }
 
     public int? CompanyId { get; set; }
     public bool ProviderConfirmedManually { get; set; }
@@ -38,7 +38,7 @@ public sealed class SupplierInvoiceDraft
     public bool Paid { get; init; }
     public bool Charget { get; init; }
 
-    public List<SupplierInvoiceItemDraft> Items { get; init; } = [];
+    public List<SupplierInvoiceItemDraft> Items { get; set; } = [];
     public List<string> Warnings { get; } = [];
     public List<string> ValidationErrors { get; } = [];
     public List<string> ProviderCandidates { get; } = [];
