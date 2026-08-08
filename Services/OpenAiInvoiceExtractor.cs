@@ -60,29 +60,60 @@ public sealed class OpenAiInvoiceExtractor
 
     public static void MergeIntoDraft(SupplierInvoiceDraft draft, AiInvoiceExtraction extraction)
     {
-        if (string.IsNullOrWhiteSpace(draft.ProviderName)) draft.ProviderName = extraction.ProviderName?.Trim() ?? "";
-        if (string.IsNullOrWhiteSpace(draft.SupplierTaxId)) draft.SupplierTaxId = extraction.SupplierTaxId?.Trim();
-        if (string.IsNullOrWhiteSpace(draft.InvoiceNumber)) draft.InvoiceNumber = extraction.InvoiceNumber?.Trim() ?? "";
-        if (draft.InvoiceDate == DateTime.MinValue && extraction.InvoiceDate.HasValue) draft.InvoiceDate = extraction.InvoiceDate.Value;
-        if (!draft.DueDate.HasValue) draft.DueDate = extraction.DueDate;
-        if (string.IsNullOrWhiteSpace(draft.CurrencyCode)) draft.CurrencyCode = extraction.CurrencyCode?.Trim().ToUpperInvariant();
-        if (string.IsNullOrWhiteSpace(draft.MainDescription)) draft.MainDescription = extraction.MainDescription?.Trim() ?? "";
-        draft.DocumentSubtotal ??= extraction.DocumentSubtotal;
-        draft.DocumentTaxTotal ??= extraction.DocumentTaxTotal;
-        draft.DocumentTotal ??= extraction.DocumentTotal;
-        if (draft.Items.Count == 0 && extraction.Items.Count > 0)
+        MarkLocalOrigins(draft);
+
+        if (!string.IsNullOrWhiteSpace(extraction.ProviderName)) Set(draft, "provider", extraction.ProviderName.Trim(), value => draft.ProviderName = value);
+        if (!string.IsNullOrWhiteSpace(extraction.SupplierTaxId)) Set(draft, "supplierTaxId", extraction.SupplierTaxId.Trim(), value => draft.SupplierTaxId = value);
+        if (!string.IsNullOrWhiteSpace(extraction.InvoiceNumber)) Set(draft, "invoiceNumber", extraction.InvoiceNumber.Trim(), value => draft.InvoiceNumber = value);
+        if (extraction.InvoiceDate.HasValue) Set(draft, "invoiceDate", extraction.InvoiceDate.Value, value => draft.InvoiceDate = value);
+        if (extraction.DueDate.HasValue) Set(draft, "dueDate", extraction.DueDate.Value, value => draft.DueDate = value);
+        if (!string.IsNullOrWhiteSpace(extraction.CurrencyCode)) Set(draft, "currency", extraction.CurrencyCode.Trim().ToUpperInvariant(), value => draft.CurrencyCode = value);
+        if (!string.IsNullOrWhiteSpace(extraction.MainDescription)) Set(draft, "description", extraction.MainDescription.Trim(), value => draft.MainDescription = value);
+        if (extraction.DocumentSubtotal.HasValue) Set(draft, "subtotal", extraction.DocumentSubtotal.Value, value => draft.DocumentSubtotal = value);
+        if (extraction.DocumentTaxTotal.HasValue) Set(draft, "tax", extraction.DocumentTaxTotal.Value, value => draft.DocumentTaxTotal = value);
+        if (extraction.DocumentTotal.HasValue) Set(draft, "total", extraction.DocumentTotal.Value, value => draft.DocumentTotal = value);
+
+        if (extraction.Items.Count > 0 && extraction.Items.All(IsValidAiItem))
         {
             draft.Items = extraction.Items.Select((item, index) => new SupplierInvoiceItemDraft
             {
                 Position = index + 1,
                 Description = item.Description?.Trim() ?? "",
-                Amount = item.Amount,
-                UnitPrice = item.UnitPrice,
-                IVA = item.IVA,
+                Amount = item.Amount!.Value,
+                UnitPrice = item.UnitPrice!.Value,
+                IVA = item.IVA!.Value,
                 DocumentLineNetAmount = item.DocumentLineNetAmount,
                 DocumentLineTotal = item.DocumentLineTotal
             }).ToList();
+            draft.FieldOrigins["items"] = "AI";
         }
+        else if (extraction.Items.Count > 0)
+            draft.Warnings.Add("OpenAI devolvió items incompletos o sin confianza suficiente; se conserva el parser local para los items.");
+    }
+
+    private static bool IsValidAiItem(AiInvoiceItemExtraction item) =>
+        !string.IsNullOrWhiteSpace(item.Description) && item.Amount is > 0 && item.UnitPrice is >= 0 && item.IVA is >= 0 and <= 100 &&
+        item.DocumentLineNetAmount.HasValue && item.DocumentLineTotal.HasValue;
+
+    private static void MarkLocalOrigins(SupplierInvoiceDraft draft)
+    {
+        if (!string.IsNullOrWhiteSpace(draft.ProviderName)) draft.FieldOrigins["provider"] = "LocalParser";
+        if (!string.IsNullOrWhiteSpace(draft.SupplierTaxId)) draft.FieldOrigins["supplierTaxId"] = "LocalParser";
+        if (!string.IsNullOrWhiteSpace(draft.InvoiceNumber)) draft.FieldOrigins["invoiceNumber"] = "LocalParser";
+        if (draft.InvoiceDate != DateTime.MinValue) draft.FieldOrigins["invoiceDate"] = "LocalParser";
+        if (draft.DueDate.HasValue) draft.FieldOrigins["dueDate"] = "LocalParser";
+        if (!string.IsNullOrWhiteSpace(draft.CurrencyCode)) draft.FieldOrigins["currency"] = "LocalParser";
+        if (!string.IsNullOrWhiteSpace(draft.MainDescription)) draft.FieldOrigins["description"] = "LocalParser";
+        if (draft.DocumentSubtotal.HasValue) draft.FieldOrigins["subtotal"] = "LocalParser";
+        if (draft.DocumentTaxTotal.HasValue) draft.FieldOrigins["tax"] = "LocalParser";
+        if (draft.DocumentTotal.HasValue) draft.FieldOrigins["total"] = "LocalParser";
+        if (draft.Items.Count > 0) draft.FieldOrigins["items"] = "LocalParser";
+    }
+
+    private static void Set<T>(SupplierInvoiceDraft draft, string field, T value, Action<T> setter)
+    {
+        setter(value);
+        draft.FieldOrigins[field] = "AI";
     }
 
     private static string BuildPrompt(string text) => $"""

@@ -230,6 +230,9 @@ public static class Program
         Console.WriteLine($"Bloque candidato a emisor: {draft.IssuerCandidateBlock}");
         Console.WriteLine($"Bloque candidato a receptor: {draft.RecipientCandidateBlock}");
         Console.WriteLine($"Motivo de selección del emisor: {draft.IssuerSelectionReason}");
+        Console.WriteLine("Origen de campos: " + (draft.FieldOrigins.Count == 0
+            ? "no disponible"
+            : string.Join(", ", draft.FieldOrigins.OrderBy(pair => pair.Key).Select(pair => $"{pair.Key}={pair.Value}"))));
         Console.WriteLine($"Project-id {(draft.ProjectConfirmedManually ? "confirmado manualmente" : "solicitado")}: {draft.CommercialProjectId?.ToString() ?? "no indicado"}");
         Console.WriteLine($"Proyecto: {draft.CommercialProjectName ?? "no resuelto"} | CommercialProjectsID: {draft.CommercialProjectId?.ToString() ?? "no resuelto"}");
         Console.WriteLine($"Notes: {draft.Notes}");

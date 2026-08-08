@@ -18,9 +18,9 @@ public sealed class AiInvoiceExtraction
 public sealed class AiInvoiceItemExtraction
 {
     public string? Description { get; set; }
-    public decimal Amount { get; set; }
-    public decimal UnitPrice { get; set; }
-    public decimal IVA { get; set; }
+    public decimal? Amount { get; set; }
+    public decimal? UnitPrice { get; set; }
+    public decimal? IVA { get; set; }
     public decimal? DocumentLineNetAmount { get; set; }
     public decimal? DocumentLineTotal { get; set; }
 }

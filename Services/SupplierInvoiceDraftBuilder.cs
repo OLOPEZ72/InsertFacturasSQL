@@ -221,6 +221,14 @@ public sealed class SupplierInvoiceDraftBuilder
                 draft.ValidationErrors.Add(
                     $"{prefix} la base calculada ({item.CalculatedNetAmount:F2}) no coincide con el PDF ({item.DocumentLineNetAmount.Value:F2}).");
             }
+
+            if (draft.FieldOrigins.TryGetValue("items", out string? itemOrigin) &&
+                itemOrigin == "AI" && item.DocumentLineNetAmount.HasValue &&
+                Math.Abs(item.Amount * item.UnitPrice - item.DocumentLineNetAmount.Value) > TotalTolerance)
+            {
+                draft.ValidationErrors.Add(
+                    $"{prefix} la cantidad por precio ({item.Amount * item.UnitPrice:F2}) no es coherente con la base AI ({item.DocumentLineNetAmount.Value:F2}); requiere revisión.");
+            }
         }
 
         CompareTotal(draft, "subtotal", draft.DocumentSubtotal, draft.CalculatedSubtotal);

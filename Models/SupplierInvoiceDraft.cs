@@ -42,6 +42,7 @@ public sealed class SupplierInvoiceDraft
     public List<string> Warnings { get; } = [];
     public List<string> ValidationErrors { get; } = [];
     public List<string> ProviderCandidates { get; } = [];
+    public Dictionary<string, string> FieldOrigins { get; } = new(StringComparer.OrdinalIgnoreCase);
 
     public string Notes => $"Factura {InvoiceNumber}";
 
