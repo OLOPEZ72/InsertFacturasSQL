@@ -84,6 +84,35 @@ public sealed class OpenAiInvoiceExtractorTests
         Assert.Equal("LocalParser", draft.FieldOrigins["invoiceNumber"]);
     }
 
+    [Fact]
+    public void MergeIntoDraft_NeverUsesCustomerAsSupplierAndCalculatesOnlyMissingUnitPrice()
+    {
+        var draft = new SupplierInvoiceDraft { ProviderName = "Cliente local" };
+        var extraction = new AiInvoiceExtraction
+        {
+            Issuer = new AiPartyExtraction { Name = "Cliente local", TaxId = "ES123" },
+            Customer = new AiPartyExtraction { Name = "Cliente local", TaxId = "ES123" },
+            Items = [new AiInvoiceItemExtraction
+            {
+                Description = "Producto",
+                Quantity = 2,
+                BaseAmount = 20,
+                TaxRate = 21,
+                TaxAmount = 4.2m,
+                TotalAmount = 24.2m
+            }]
+        };
+
+        OpenAiInvoiceExtractor.MergeIntoDraft(draft, extraction);
+
+        Assert.Empty(draft.ProviderName);
+        SupplierInvoiceItemDraft item = Assert.Single(draft.Items);
+        Assert.Equal(10m, item.UnitPrice);
+        Assert.True(item.UnitPriceCalculated);
+        Assert.Equal(20m, item.DocumentLineNetAmount);
+        Assert.Equal(24.2m, item.DocumentLineTotal);
+    }
+
     private sealed class ThrowingHandler : HttpMessageHandler
     {
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>

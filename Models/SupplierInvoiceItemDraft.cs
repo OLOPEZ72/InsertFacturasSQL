@@ -6,6 +6,7 @@ public sealed class SupplierInvoiceItemDraft
     public string Description { get; init; } = "";
     public decimal Amount { get; init; }
     public decimal UnitPrice { get; init; }
+    public bool UnitPriceCalculated { get; init; }
     public decimal? DiscountPercent { get; init; }
     public decimal IVA { get; init; }
     public decimal? DocumentLineNetAmount { get; init; }

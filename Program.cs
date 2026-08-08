@@ -249,7 +249,7 @@ public static class Program
         foreach (var item in draft.Items.OrderBy(item => item.Position))
         {
             Console.WriteLine(
-                $"{item.Position}. {item.Description} | Cantidad {item.Amount} | Precio {item.UnitPrice:F2} | IVA {item.IVA}% | Base {item.CalculatedNetAmount:F2} | Total {item.CalculatedTotal:F2}");
+                $"{item.Position}. {item.Description} | Cantidad {item.Amount} | Precio {item.UnitPrice:F2}{(item.UnitPriceCalculated ? " (calculado)" : "")} | IVA {item.IVA}% | Base {item.CalculatedNetAmount:F2} | Total {item.CalculatedTotal:F2}");
         }
 
         Console.WriteLine();

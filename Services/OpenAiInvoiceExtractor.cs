@@ -64,7 +64,10 @@ public sealed class OpenAiInvoiceExtractor
     public static void MergeIntoDraft(SupplierInvoiceDraft draft, AiInvoiceExtraction extraction)
     {
         MarkLocalOrigins(draft);
-        if (extraction.Issuer is not null)
+        bool issuerMatchesCustomer = extraction.Issuer is not null && extraction.Customer is not null &&
+            ((!string.IsNullOrWhiteSpace(extraction.Issuer.Name) && string.Equals(extraction.Issuer.Name.Trim(), extraction.Customer.Name?.Trim(), StringComparison.OrdinalIgnoreCase)) ||
+             (!string.IsNullOrWhiteSpace(extraction.Issuer.TaxId) && string.Equals(extraction.Issuer.TaxId.Trim(), extraction.Customer.TaxId?.Trim(), StringComparison.OrdinalIgnoreCase)));
+        if (extraction.Issuer is not null && !issuerMatchesCustomer)
         {
             if (!string.IsNullOrWhiteSpace(extraction.Issuer.Name)) Set(draft, "provider", extraction.Issuer.Name.Trim(), value => draft.ProviderName = value);
             if (!string.IsNullOrWhiteSpace(extraction.Issuer.TaxId)) Set(draft, "supplierTaxId", extraction.Issuer.TaxId.Trim(), value => draft.SupplierTaxId = value);
@@ -93,7 +96,8 @@ public sealed class OpenAiInvoiceExtractor
                 Position = index + 1,
                 Description = item.Description!.Trim(),
                 Amount = (item.Quantity ?? item.Amount)!.Value,
-                UnitPrice = item.UnitPrice!.Value,
+                UnitPrice = item.UnitPrice ?? (item.BaseAmount ?? item.DocumentLineNetAmount)!.Value / (item.Quantity ?? item.Amount)!.Value,
+                UnitPriceCalculated = !item.UnitPrice.HasValue,
                 IVA = (item.TaxRate ?? item.IVA)!.Value,
                 DocumentLineNetAmount = item.BaseAmount ?? item.DocumentLineNetAmount,
                 DocumentLineTaxAmount = item.TaxAmount,
@@ -106,7 +110,7 @@ public sealed class OpenAiInvoiceExtractor
     }
 
     private static bool IsValidAiItem(AiInvoiceItemExtraction item) =>
-        !string.IsNullOrWhiteSpace(item.Description) && (item.Quantity ?? item.Amount) is > 0 && item.UnitPrice is >= 0 &&
+        !string.IsNullOrWhiteSpace(item.Description) && (item.Quantity ?? item.Amount) is > 0 && (item.UnitPrice is null || item.UnitPrice is >= 0) &&
         (item.TaxRate ?? item.IVA) is >= 0 and <= 100 && (item.BaseAmount ?? item.DocumentLineNetAmount).HasValue &&
         (item.TotalAmount ?? item.DocumentLineTotal).HasValue;
 
