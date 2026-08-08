@@ -14,6 +14,22 @@ public sealed class OpenAiInvoiceExtractorTests
 
         Assert.Null(result.Extraction);
         Assert.Contains("OPENAI_API_KEY", result.Error);
+        Assert.False(result.Diagnostic?.ApiKeyExists);
+    }
+
+    [Fact]
+    public void Extract_OnHttpError_ReturnsSafeDiagnosticWithoutResponseBody()
+    {
+        const string body = "{\"error\":{\"type\":\"invalid_request_error\",\"code\":\"invalid_api_key\",\"message\":\"bad key\"}}";
+        var extractor = new OpenAiInvoiceExtractor(new HttpClient(new ErrorHandler(body)));
+
+        AiExtractionResult result = extractor.Extract("texto", "secret-key");
+
+        Assert.Equal("http-response", result.Diagnostic?.Stage);
+        Assert.Equal(401, result.Diagnostic?.HttpStatusCode);
+        Assert.Equal("invalid_request_error", result.Diagnostic?.ErrorType);
+        Assert.Equal("invalid_api_key", result.Diagnostic?.ErrorCode);
+        Assert.DoesNotContain("secret-key", result.Diagnostic?.SanitizedMessage ?? "");
     }
 
     [Fact]
@@ -67,6 +83,7 @@ public sealed class OpenAiInvoiceExtractorTests
             _ = new OpenAiInvoiceExtractor(new HttpClient(handler)).Extract("texto", "test-key", path);
             Assert.Contains("input_file", handler.RequestBody);
             Assert.Contains("data:application/pdf;base64", handler.RequestBody);
+            Assert.Contains("json_schema", handler.RequestBody);
         }
         finally
         {
@@ -140,6 +157,15 @@ public sealed class OpenAiInvoiceExtractorTests
             RequestBody = request.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
             return new HttpResponseMessage(System.Net.HttpStatusCode.OK) { Content = new StringContent(body) };
         }
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>
+            Task.FromResult(Send(request, cancellationToken));
+    }
+
+    private sealed class ErrorHandler(string body) : HttpMessageHandler
+    {
+        protected override HttpResponseMessage Send(HttpRequestMessage request, CancellationToken cancellationToken) =>
+            new(System.Net.HttpStatusCode.Unauthorized) { Content = new StringContent(body) };
 
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>
             Task.FromResult(Send(request, cancellationToken));
