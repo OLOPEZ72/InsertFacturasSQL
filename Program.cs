@@ -69,7 +69,8 @@ public static class Program
         {
             AiExtractionResult aiResult = new OpenAiInvoiceExtractor().Extract(
                 document.ExtractedText,
-                Environment.GetEnvironmentVariable("OPENAI_API_KEY"));
+                Environment.GetEnvironmentVariable("OPENAI_API_KEY"),
+                document.FilePath);
             if (aiResult.Extraction is not null)
             {
                 OpenAiInvoiceExtractor.MergeIntoDraft(draft, aiResult.Extraction);
@@ -132,6 +133,11 @@ public static class Program
                     : !project.IsOpen
                         ? $"El proyecto comercial con ID {projectId} no está disponible para nuevas facturas."
                         : null;
+                if (draft.CommercialProjectIsValid)
+                {
+                    foreach (SupplierInvoiceItemDraft item in draft.Items)
+                        item.CommercialProjectId = draft.CommercialProjectId;
+                }
             }
             else
             {

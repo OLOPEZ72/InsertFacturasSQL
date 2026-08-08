@@ -27,6 +27,7 @@ public sealed class OpenAiInvoiceExtractorTests
         var extraction = new AiInvoiceExtraction
         {
             InvoiceNumber = "AI-2",
+            Issuer = new AiPartyExtraction { Name = "Proveedor AI", EvidenceInDocument = true },
             ProviderName = "Proveedor AI",
             MainDescription = "AI",
             Items = [new AiInvoiceItemExtraction { Description = "Servicio", Amount = 1, UnitPrice = 10, IVA = 21, DocumentLineNetAmount = 10, DocumentLineTotal = 12.1m }]
@@ -56,6 +57,24 @@ public sealed class OpenAiInvoiceExtractorTests
     }
 
     [Fact]
+    public void Extract_IncludesOriginalPdfWhenPathIsProvided()
+    {
+        string path = Path.Combine(Path.GetTempPath(), $"invoice-{Guid.NewGuid():N}.pdf");
+        File.WriteAllBytes(path, [1, 2, 3]);
+        var handler = new CapturingHandler("{\"output_text\":\"{}\"}");
+        try
+        {
+            _ = new OpenAiInvoiceExtractor(new HttpClient(handler)).Extract("texto", "test-key", path);
+            Assert.Contains("input_file", handler.RequestBody);
+            Assert.Contains("data:application/pdf;base64", handler.RequestBody);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
     public void MergeIntoDraft_UsesLocalParserWhenAiFieldIsNull()
     {
         var draft = new SupplierInvoiceDraft { InvoiceNumber = "LOCAL-1" };
@@ -81,5 +100,19 @@ public sealed class OpenAiInvoiceExtractorTests
             {
                 Content = new StringContent(body)
             });
+    }
+
+    private sealed class CapturingHandler(string body) : HttpMessageHandler
+    {
+        public string RequestBody { get; private set; } = "";
+
+        protected override HttpResponseMessage Send(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            RequestBody = request.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+            return new HttpResponseMessage(System.Net.HttpStatusCode.OK) { Content = new StringContent(body) };
+        }
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>
+            Task.FromResult(Send(request, cancellationToken));
     }
 }
