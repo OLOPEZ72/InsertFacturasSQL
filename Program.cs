@@ -20,6 +20,8 @@ public static class Program
         bool showRawText = args.Contains("--show-raw-text", StringComparer.OrdinalIgnoreCase);
         bool previewSql = args.Contains("--preview-sql", StringComparer.OrdinalIgnoreCase);
         bool useAi = args.Contains("--use-ai", StringComparer.OrdinalIgnoreCase);
+        bool aiDebug = args.Contains("--ai-debug", StringComparer.OrdinalIgnoreCase);
+        bool review = args.Contains("--review", StringComparer.OrdinalIgnoreCase);
         string? requestedPdf = ReadPdfPath(args);
 
         if (showRawText && !previewSql)
@@ -34,10 +36,10 @@ public static class Program
             return FailureExitCode;
         }
 
-        return RunSqlPreview(pdfPath!, providerId, currencyId, projectId, showRawText, useAi);
+        return RunSqlPreview(pdfPath!, providerId, currencyId, projectId, showRawText, useAi, aiDebug, review);
     }
 
-    private static int RunSqlPreview(string pdfPath, int? providerId, int? currencyId, int? projectId, bool showRawText, bool useAi)
+    private static int RunSqlPreview(string pdfPath, int? providerId, int? currencyId, int? projectId, bool showRawText, bool useAi, bool aiDebug, bool review)
     {
         Console.WriteLine(SupplierInvoiceSqlPreviewGenerator.PreviewWarning);
 
@@ -79,6 +81,8 @@ public static class Program
             else if (!string.IsNullOrWhiteSpace(aiResult.Error))
             {
                 draft.Warnings.Add(aiResult.Error);
+                if (aiDebug && aiResult.Diagnostic is not null)
+                    PrintAiDiagnostic(aiResult.Diagnostic);
             }
         }
         draft.ProviderConfirmedManually = providerId.HasValue;
@@ -179,6 +183,12 @@ public static class Program
                 draft.PotentialDuplicateCount = new SupplierInvoiceDuplicateChecker()
                     .CountPotentialDuplicates(connection, draft.CompanyId.Value, draft.InvoiceDate, draft.Notes);
             }
+
+            if (review && !RunInteractiveReview(draft, builder, connection))
+            {
+                Console.WriteLine("Revisión cancelada. No se generará SQL Preview.");
+                return 0;
+            }
         }
         catch (SqlException)
         {
@@ -216,6 +226,73 @@ public static class Program
         Console.WriteLine("Resultado: LISTA PARA INSERTAR");
         Console.WriteLine(SupplierInvoiceSqlPreviewGenerator.PreviewWarning);
         return 0;
+    }
+
+    private static bool RunInteractiveReview(SupplierInvoiceDraft draft, SupplierInvoiceDraftBuilder builder, SqlConnection connection)
+    {
+        var engine = new SupplierInvoiceReviewEngine();
+        engine.CaptureOriginal(draft);
+        Console.WriteLine();
+        Console.WriteLine("REVISIÓN INTERACTIVA (solo memoria)");
+        Console.WriteLine("Comandos: provider <id>, currency <id>, invoice <valor>, date <dd/MM/yyyy>, notes <texto>, init <texto>");
+        Console.WriteLine("          item <posición> <description|quantity|price|iva> <valor>, confirm, cancel");
+        while (true)
+        {
+            Console.WriteLine($"Proveedor: {draft.ProviderName} (CompanyID {draft.CompanyId?.ToString() ?? "?"}) | Factura: {draft.InvoiceNumber} | Fecha: {draft.InvoiceDate:dd/MM/yyyy}");
+            Console.Write("review> ");
+            string? input = Console.ReadLine();
+            if (string.IsNullOrWhiteSpace(input)) continue;
+            string[] parts = input.Split(' ', 3, StringSplitOptions.RemoveEmptyEntries);
+            string command = parts[0].ToLowerInvariant();
+            if (command == "cancel") return false;
+            if (command == "confirm")
+            {
+                builder.Validate(draft);
+                Console.WriteLine("Validaciones recalculadas.");
+                foreach (string difference in engine.Differences(draft)) Console.WriteLine($"- {difference}");
+                return true;
+            }
+
+            bool changed = false;
+            if (command == "provider" && parts.Length >= 2 && int.TryParse(parts[1], out int providerId))
+            {
+                ProviderMatch? match = new ProviderResolver().ResolveById(connection, providerId);
+                if (match is not null) { engine.SetProvider(draft, match); changed = true; } else Console.WriteLine("CompanyID no existe.");
+            }
+            else if (command == "currency" && parts.Length >= 2 && int.TryParse(parts[1], out int currencyId))
+            {
+                CurrencyMatch? match = new CurrencyReader().FindById(connection, currencyId);
+                if (match is not null) { engine.SetCurrency(draft, match); changed = true; } else Console.WriteLine("CurrencyID no existe.");
+            }
+            else if (command == "invoice" && parts.Length >= 2) changed = engine.SetInvoiceNumber(draft, input[(input.IndexOf(' ') + 1)..]);
+            else if (command == "date" && parts.Length >= 2) changed = engine.SetDate(draft, parts[1]);
+            else if (command == "notes" && parts.Length >= 2) { engine.SetNotes(draft, input[(input.IndexOf(' ') + 1)..]); changed = true; }
+            else if (command == "init" && parts.Length >= 2) { engine.SetInitDescription(draft, input[(input.IndexOf(' ') + 1)..]); changed = true; }
+            else if (command == "item" && parts.Length == 3)
+            {
+                string[] itemParts = parts[2].Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
+                changed = itemParts.Length == 2 && int.TryParse(parts[1], out int position) && engine.SetItem(draft, position, itemParts[0], itemParts[1]);
+            }
+            if (!changed) Console.WriteLine("Comando o valor no válido.");
+            else { builder.Validate(draft); Console.WriteLine("Validaciones y totales recalculados."); }
+        }
+    }
+
+    private static void PrintAiDiagnostic(AiCallDiagnostic diagnostic)
+    {
+        Console.WriteLine();
+        Console.WriteLine("AI DEBUG (DIAGNÓSTICO SEGURO)");
+        Console.WriteLine($"Endpoint: {diagnostic.Endpoint}");
+        Console.WriteLine($"Etapa: {diagnostic.Stage}");
+        Console.WriteLine($"HTTP status code: {diagnostic.HttpStatusCode?.ToString() ?? "no disponible"}");
+        Console.WriteLine($"Tipo de error: {diagnostic.ErrorType ?? "no disponible"}");
+        Console.WriteLine($"Código de error: {diagnostic.ErrorCode ?? "no disponible"}");
+        Console.WriteLine($"Mensaje sanitizado: {diagnostic.SanitizedMessage ?? "no disponible"}");
+        Console.WriteLine($"Modelo: {diagnostic.Model}");
+        Console.WriteLine($"OPENAI_API_KEY existe: {diagnostic.ApiKeyExists.ToString().ToLowerInvariant()}");
+        Console.WriteLine($"Archivo enviado: {diagnostic.FileSent.ToString().ToLowerInvariant()}");
+        Console.WriteLine($"Tipo MIME: {diagnostic.MimeType}");
+        Console.WriteLine($"Tamaño archivo: {(diagnostic.FileSizeBytes.HasValue ? diagnostic.FileSizeBytes.Value + " bytes" : "no disponible")}");
     }
 
     private static void PrintDraft(SupplierInvoiceDraft draft)
@@ -393,5 +470,5 @@ public static class Program
 
     private static void ShowUsage() =>
         Console.WriteLine(
-            "Uso: dotnet run -- \"ruta-factura.pdf\" --project-id 123 --preview-sql [--provider-id 1] [--currency-id 2] [--use-ai] [--show-raw-text]");
+            "Uso: dotnet run -- \"ruta-factura.pdf\" --project-id 123 --preview-sql [--provider-id 1] [--currency-id 2] [--use-ai] [--ai-debug] [--review] [--show-raw-text]");
 }

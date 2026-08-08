@@ -43,10 +43,12 @@ public sealed class SupplierInvoiceDraft
     public List<string> ValidationErrors { get; } = [];
     public List<string> ProviderCandidates { get; } = [];
     public Dictionary<string, string> FieldOrigins { get; } = new(StringComparer.OrdinalIgnoreCase);
+    public string? ManualNotes { get; set; }
+    public string? ManualInitDescription { get; set; }
 
-    public string Notes => $"Factura {InvoiceNumber}";
+    public string Notes => ManualNotes ?? $"Factura {InvoiceNumber}";
 
-    public string InitDescription =>
+    public string InitDescription => ManualInitDescription ??
         $"{ProviderName} - Factura {InvoiceNumber} - {MainDescription}";
 
     public decimal CalculatedSubtotal => Items.Sum(item => item.CalculatedNetAmount);
