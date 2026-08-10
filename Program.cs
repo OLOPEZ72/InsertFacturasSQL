@@ -67,6 +67,7 @@ public static class Program
 
         var builder = new SupplierInvoiceDraftBuilder();
         SupplierInvoiceDraft draft = builder.Build(document, projectId);
+        string? aiSupplierName = null;
         if (useAi)
         {
             AiExtractionResult aiResult = new OpenAiInvoiceExtractor().Extract(
@@ -76,6 +77,7 @@ public static class Program
             if (aiResult.Extraction is not null)
             {
                 OpenAiInvoiceExtractor.MergeIntoDraft(draft, aiResult.Extraction);
+                aiSupplierName = draft.ProviderName;
                 draft.Warnings.Add("Extracción opcional con OpenAI aplicada como complemento del parser local.");
             }
             else if (!string.IsNullOrWhiteSpace(aiResult.Error))
@@ -107,6 +109,11 @@ public static class Program
             else if (!string.IsNullOrWhiteSpace(provider.Warning))
             {
                 draft.Warnings.Add(provider.Warning);
+            }
+
+            if (useAi && !providerId.HasValue && provider.Match is null && !string.IsNullOrWhiteSpace(aiSupplierName))
+            {
+                draft.ProviderName = aiSupplierName;
             }
 
             if (providerId.HasValue && provider.Match is null)

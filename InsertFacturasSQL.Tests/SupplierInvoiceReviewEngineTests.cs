@@ -53,4 +53,22 @@ public sealed class SupplierInvoiceReviewEngineTests
         Assert.Equal(1, draft.CurrencyId);
         Assert.Equal("EUR", draft.CurrencyCode);
     }
+
+    [Fact]
+    public void ReviewFlow_PreservesAiSupplierAndNeverUsesCustomer()
+    {
+        var draft = new SupplierInvoiceDraft { ProviderName = "Ibys Technologies SA" };
+        OpenAiInvoiceExtractor.MergeIntoDraft(draft, new AiInvoiceExtraction
+        {
+            SupplierName = "Carrefour",
+            SupplierTaxId = "FR123",
+            CustomerName = "Ibys Technologies SA",
+            CustomerTaxId = "ES456"
+        });
+        var engine = new SupplierInvoiceReviewEngine();
+        engine.CaptureOriginal(draft);
+
+        Assert.Equal("Carrefour", draft.ProviderName);
+        Assert.DoesNotContain(engine.Differences(draft), difference => difference.Contains("Ibys", StringComparison.OrdinalIgnoreCase));
+    }
 }
