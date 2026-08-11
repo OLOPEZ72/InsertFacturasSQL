@@ -5,6 +5,8 @@ public sealed class AiInvoiceExtraction
     public string? SupplierName { get; set; }
     public string? CustomerName { get; set; }
     public string? CustomerTaxId { get; set; }
+    public string? SupplierEvidence { get; set; }
+    public string? CustomerEvidence { get; set; }
     public string? Currency { get; set; }
     public decimal? Subtotal { get; set; }
     public decimal? TaxAmount { get; set; }
@@ -24,6 +26,16 @@ public sealed class AiInvoiceExtraction
     public decimal? DocumentTaxTotal { get; set; }
     public decimal? DocumentTotal { get; set; }
     public List<AiInvoiceItemExtraction> Items { get; set; } = [];
+    public List<AiAdditionalChargeExtraction> AdditionalCharges { get; set; } = [];
+}
+
+public sealed class AiAdditionalChargeExtraction
+{
+    public string? Description { get; set; }
+    public decimal? BaseAmount { get; set; }
+    public decimal? TaxRate { get; set; }
+    public decimal? TaxAmount { get; set; }
+    public decimal? TotalAmount { get; set; }
 }
 
 public sealed class AiPartyExtraction

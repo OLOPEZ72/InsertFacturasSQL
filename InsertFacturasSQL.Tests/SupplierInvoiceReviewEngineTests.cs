@@ -62,6 +62,7 @@ public sealed class SupplierInvoiceReviewEngineTests
         {
             SupplierName = "Carrefour",
             SupplierTaxId = "FR123",
+            SupplierEvidence = "Logotipo y cabecera superior",
             CustomerName = "Ibys Technologies SA",
             CustomerTaxId = "ES456"
         });

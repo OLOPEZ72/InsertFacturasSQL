@@ -18,6 +18,13 @@ public sealed class OpenAiInvoiceExtractorTests
     }
 
     [Fact]
+    public void Extract_UsesConfiguredInvoiceModelWhenProvided()
+    {
+        Assert.Equal("test-invoice-model", OpenAiInvoiceExtractor.ResolveModel(" test-invoice-model "));
+        Assert.Equal("gpt-4o-mini", OpenAiInvoiceExtractor.ResolveModel(null));
+    }
+
+    [Fact]
     public void Extract_OnHttpError_ReturnsSafeDiagnosticWithoutResponseBody()
     {
         const string body = "{\"error\":{\"type\":\"invalid_request_error\",\"code\":\"invalid_api_key\",\"message\":\"bad key\"}}";
@@ -44,6 +51,7 @@ public sealed class OpenAiInvoiceExtractorTests
         {
             InvoiceNumber = "AI-2",
             Issuer = new AiPartyExtraction { Name = "Proveedor AI", EvidenceInDocument = true },
+            SupplierEvidence = "Cabecera superior y razón social del emisor",
             ProviderName = "Proveedor AI",
             MainDescription = "AI",
             Items = [new AiInvoiceItemExtraction { Description = "Servicio", Amount = 1, UnitPrice = 10, IVA = 21, DocumentLineNetAmount = 10, DocumentLineTotal = 12.1m }]
@@ -128,6 +136,30 @@ public sealed class OpenAiInvoiceExtractorTests
         Assert.True(item.UnitPriceCalculated);
         Assert.Equal(20m, item.DocumentLineNetAmount);
         Assert.Equal(24.2m, item.DocumentLineTotal);
+    }
+
+    [Fact]
+    public void MergeIntoDraft_UsesPrintedAmountsAndAddsAdditionalCharges()
+    {
+        var draft = new SupplierInvoiceDraft();
+        OpenAiInvoiceExtractor.MergeIntoDraft(draft, new AiInvoiceExtraction
+        {
+            SupplierName = "Carrefour",
+            SupplierEvidence = "Cabecera superior",
+            Items = [new AiInvoiceItemExtraction { Description = "Leche", Quantity = 60, BaseAmount = 50.77m, TaxRate = 4, TaxAmount = 2.03m, TotalAmount = 52.80m }],
+            AdditionalCharges = [new AiAdditionalChargeExtraction { Description = "GASTOS DE ENVÍO", BaseAmount = 3.30m, TaxRate = 21, TaxAmount = 0.69m, TotalAmount = 3.99m }]
+        });
+
+        Assert.Equal(2, draft.Items.Count);
+        Assert.Equal(50.77m, draft.Items[0].CalculatedNetAmount);
+        Assert.Equal(2.03m, draft.Items[0].CalculatedTaxAmount);
+        Assert.Equal(52.80m, draft.Items[0].CalculatedTotal);
+        Assert.Equal(3.30m, draft.Items[1].CalculatedNetAmount);
+        Assert.Equal(0.69m, draft.Items[1].CalculatedTaxAmount);
+        Assert.Equal(3.99m, draft.Items[1].CalculatedTotal);
+        Assert.Equal(54.07m, draft.CalculatedSubtotal);
+        Assert.Equal(2.72m, draft.CalculatedTaxTotal);
+        Assert.Equal(56.79m, draft.CalculatedTotal);
     }
 
     private sealed class ThrowingHandler : HttpMessageHandler
