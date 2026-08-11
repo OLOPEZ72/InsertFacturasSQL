@@ -69,6 +69,7 @@ public sealed class SupplierInvoiceSqlPreviewGenerator : ISupplierInvoiceSqlPrev
         sql.AppendLine("    SET @PersistedFinalTotal = @PersistedBaseTotal + @PersistedTaxTotal;");
         sql.AppendLine("    IF ABS(@PersistedFinalTotal - @ExpectedInvoiceTotal) > @InvoiceTotalTolerance");
         sql.AppendLine("        THROW 51000, 'El total persistido no coincide con el total de la factura.', 1;");
+        sql.AppendLine("    SELECT @ProviderOrderID AS ProviderOrderID;");
 
         sql.AppendLine();
         sql.AppendLine("    COMMIT TRANSACTION;");

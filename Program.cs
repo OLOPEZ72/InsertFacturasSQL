@@ -18,30 +18,33 @@ public static class Program
         }
 
         bool showRawText = args.Contains("--show-raw-text", StringComparer.OrdinalIgnoreCase);
-        bool previewSql = args.Contains("--preview-sql", StringComparer.OrdinalIgnoreCase);
+        bool execute = args.Contains("--execute", StringComparer.OrdinalIgnoreCase);
+        bool previewSql = args.Contains("--preview-sql", StringComparer.OrdinalIgnoreCase) ||
+                          args.Contains("--dry-run", StringComparer.OrdinalIgnoreCase);
         bool useAi = args.Contains("--use-ai", StringComparer.OrdinalIgnoreCase);
         bool aiDebug = args.Contains("--ai-debug", StringComparer.OrdinalIgnoreCase);
         bool review = args.Contains("--review", StringComparer.OrdinalIgnoreCase);
         string? requestedPdf = ReadPdfPath(args);
 
-        if (showRawText && !previewSql)
+        if (showRawText && !previewSql && !execute)
         {
             return ShowRawText(requestedPdf);
         }
 
-        if (!TryReadPreviewOptions(args, out string? pdfPath, out int? providerId, out int? currencyId, out int? projectId, out string? optionError))
+        if (!TryReadPreviewOptions(args, execute, previewSql, out string? pdfPath, out int? providerId, out int? currencyId, out int? projectId, out string? optionError))
         {
             Console.WriteLine(optionError);
             ShowUsage();
             return FailureExitCode;
         }
 
-        return RunSqlPreview(pdfPath!, providerId, currencyId, projectId, showRawText, useAi, aiDebug, review);
+        return RunSqlPreview(pdfPath!, providerId, currencyId, projectId, showRawText, useAi, aiDebug, review, execute);
     }
 
-    private static int RunSqlPreview(string pdfPath, int? providerId, int? currencyId, int? projectId, bool showRawText, bool useAi, bool aiDebug, bool review)
+    private static int RunSqlPreview(string pdfPath, int? providerId, int? currencyId, int? projectId, bool showRawText, bool useAi, bool aiDebug, bool review, bool execute)
     {
-        Console.WriteLine(SupplierInvoiceSqlPreviewGenerator.PreviewWarning);
+        if (!execute)
+            Console.WriteLine(SupplierInvoiceSqlPreviewGenerator.PreviewWarning);
 
         var document = new PdfDocumentReader().Read(pdfPath);
         if (!document.IsSuccess)
@@ -206,6 +209,46 @@ public static class Program
         PrintDraft(draft);
 
         ISupplierInvoiceSqlPreviewGenerator generator = new SupplierInvoiceSqlPreviewGenerator();
+        if (execute)
+        {
+            if (draft.ValidationErrors.Count > 0)
+            {
+                Console.WriteLine("Resultado: NO VÁLIDA; ejecución cancelada.");
+                return InvalidInvoiceExitCode;
+            }
+
+            Console.WriteLine();
+            Console.WriteLine("ESCRIBA INSERTAR PARA CONTINUAR");
+            if (!string.Equals(Console.ReadLine(), "INSERTAR", StringComparison.Ordinal))
+            {
+                Console.WriteLine("Ejecución cancelada. No se modificó la base de datos.");
+                return 0;
+            }
+
+            SupplierInvoiceSqlPreview executionPreview = generator.Generate(draft);
+            if (!executionPreview.IsExecutablePreview)
+            {
+                Console.WriteLine("Resultado: NO VÁLIDA; ejecución cancelada.");
+                foreach (string error in executionPreview.Errors) Console.WriteLine($"- {error}");
+                return InvalidInvoiceExitCode;
+            }
+
+            try
+            {
+                using var executeConnection = new SqlConnection(settings.ConnectionString);
+                executeConnection.Open();
+                int providerOrderId = new SupplierInvoiceSqlExecutor(generator).Execute(executeConnection, draft);
+                Console.WriteLine($"INSERT confirmado. ProviderOrderID: {providerOrderId}");
+                return 0;
+            }
+            catch (SqlException ex)
+            {
+                Console.WriteLine($"Error de ejecución transaccional: {ex.Message}");
+                Console.WriteLine("La transacción fue revertida si ya había comenzado.");
+                return FailureExitCode;
+            }
+        }
+
         SupplierInvoiceSqlPreview preview = generator.Generate(draft);
 
         if (!preview.IsExecutablePreview)
@@ -381,6 +424,8 @@ public static class Program
 
     private static bool TryReadPreviewOptions(
         string[] args,
+        bool execute,
+        bool previewSql,
         out string? pdfPath,
         out int? providerId,
         out int? currencyId,
@@ -391,10 +436,9 @@ public static class Program
         providerId = currencyId = projectId = null;
         error = null;
 
-        bool previewSql = args.Contains("--preview-sql", StringComparer.OrdinalIgnoreCase);
-        if (string.IsNullOrWhiteSpace(pdfPath) || !previewSql)
+        if (string.IsNullOrWhiteSpace(pdfPath) || (!previewSql && !execute))
         {
-            error = "Debe indicar un PDF y la opción --preview-sql.";
+            error = "Debe indicar un PDF y --preview-sql, --dry-run o --execute.";
             return false;
         }
 
@@ -477,5 +521,5 @@ public static class Program
 
     private static void ShowUsage() =>
         Console.WriteLine(
-            "Uso: dotnet run -- \"ruta-factura.pdf\" --project-id 123 --preview-sql [--provider-id 1] [--currency-id 2] [--use-ai] [--ai-debug] [--review] [--show-raw-text]");
+            "Uso: dotnet run -- \"ruta-factura.pdf\" --project-id 123 --preview-sql|--dry-run|--execute [--provider-id 1] [--currency-id 2] [--use-ai] [--ai-debug] [--review] [--show-raw-text]");
 }
