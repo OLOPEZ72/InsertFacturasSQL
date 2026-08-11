@@ -41,6 +41,24 @@ public sealed class SupplierInvoiceReviewEngineTests
     }
 
     [Fact]
+    public void ReviewEdits_ClearsPrintedAmountsWhenCorrectingPrice()
+    {
+        var draft = new SupplierInvoiceDraft
+        {
+            Items = [new SupplierInvoiceItemDraft
+            {
+                Position = 1, Description = "Leche", Amount = 60, UnitPrice = 0.88m,
+                IVA = 4, DocumentLineNetAmount = 50.77m, DocumentLineTotal = 52.80m
+            }]
+        };
+
+        Assert.True(new SupplierInvoiceReviewEngine().SetItem(draft, 1, "price", "0.846"));
+
+        Assert.Null(draft.Items[0].DocumentLineNetAmount);
+        Assert.Equal(0.846m, draft.Items[0].UnitPrice);
+    }
+
+    [Fact]
     public void ReviewEdits_ProviderAndCurrencyUseValidatedMatches()
     {
         var draft = new SupplierInvoiceDraft();

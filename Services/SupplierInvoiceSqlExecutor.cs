@@ -38,9 +38,58 @@ public sealed class SupplierInvoiceSqlExecutor : ISupplierInvoiceSqlExecutor
             if (parameter.Scale.HasValue) sqlParameter.Scale = parameter.Scale.Value;
         }
 
-        object? result = command.ExecuteScalar();
-        if (result is null || result is DBNull || !int.TryParse(result.ToString(), out int providerOrderId))
-            throw new InvalidOperationException("La transacción terminó sin devolver ProviderOrderID.");
-        return providerOrderId;
+        var diagnostics = new List<string>();
+        try
+        {
+            using SqlDataReader reader = command.ExecuteReader();
+            int providerOrderId = 0;
+            do
+            {
+                while (reader.Read())
+                {
+                    if (reader.HasColumn("CalculatedBase"))
+                    {
+                        diagnostics.Add(
+                            $"ProviderOrderID={reader["ProviderOrderID"]}; Description={reader["Description"]}; Amount={reader["Amount"]}; UnitPrice={reader["UnitPrice"]}; Discount={reader["Discount"]}; IVA={reader["IVA"]}; CProjectID={reader["CProjectID"]}; Base={reader["CalculatedBase"]}; IVA calculado={reader["CalculatedTax"]}");
+                    }
+                    else if (reader.HasColumn("PersistedFinalTotal"))
+                    {
+                        diagnostics.Add(
+                            $"Base total={reader["PersistedBaseTotal"]}; IVA total={reader["PersistedTaxTotal"]}; Total calculado={reader["PersistedFinalTotal"]}; Total esperado={reader["ExpectedInvoiceTotal"]}; Diferencia={reader["Difference"]}; Tolerancia={reader["Tolerance"]}");
+                    }
+                    else if (reader.HasColumn("ProviderOrderID") && reader.FieldCount == 1)
+                    {
+                        providerOrderId = Convert.ToInt32(reader["ProviderOrderID"]);
+                    }
+                }
+            }
+            while (reader.NextResult());
+
+            if (providerOrderId <= 0)
+                throw new InvalidOperationException("La transacción terminó sin devolver ProviderOrderID.");
+            return providerOrderId;
+        }
+        catch (SqlException ex) when (diagnostics.Count > 0)
+        {
+            throw new SupplierInvoiceExecutionException(ex.Message, diagnostics, ex);
+        }
+    }
+}
+
+public sealed class SupplierInvoiceExecutionException : Exception
+{
+    public SupplierInvoiceExecutionException(string message, IReadOnlyList<string> diagnostics, Exception innerException)
+        : base(message, innerException) => Diagnostics = diagnostics;
+
+    public IReadOnlyList<string> Diagnostics { get; }
+}
+
+internal static class SqlDataReaderExtensions
+{
+    public static bool HasColumn(this SqlDataReader reader, string name)
+    {
+        for (int index = 0; index < reader.FieldCount; index++)
+            if (string.Equals(reader.GetName(index), name, StringComparison.OrdinalIgnoreCase)) return true;
+        return false;
     }
 }

@@ -254,17 +254,45 @@ public sealed class OpenAiInvoiceExtractor
 
         if (extraction.Items.Count > 0 && extraction.Items.All(IsValidAiItem))
         {
-            draft.Items = extraction.Items.Select((item, index) => new SupplierInvoiceItemDraft
+            draft.Items = extraction.Items.Select((item, index) =>
             {
-                Position = index + 1,
-                Description = item.Description!.Trim(),
-                Amount = (item.Quantity ?? item.Amount)!.Value,
-                UnitPrice = item.UnitPrice ?? (item.BaseAmount ?? item.DocumentLineNetAmount)!.Value / (item.Quantity ?? item.Amount)!.Value,
-                UnitPriceCalculated = item.UnitPriceCalculated || !item.UnitPrice.HasValue,
-                IVA = (item.TaxRate ?? item.IVA)!.Value,
-                DocumentLineNetAmount = item.BaseAmount ?? item.DocumentLineNetAmount,
-                DocumentLineTaxAmount = item.TaxAmount,
-                DocumentLineTotal = item.TotalAmount ?? item.DocumentLineTotal
+                decimal amount = (item.Quantity ?? item.Amount)!.Value;
+                decimal? baseAmount = item.BaseAmount ?? item.DocumentLineNetAmount;
+                decimal? unitPrice = item.UnitPrice;
+                bool unitPriceCalculated = item.UnitPriceCalculated || !unitPrice.HasValue;
+                if (baseAmount.HasValue && amount > 0)
+                {
+                    decimal derivedUnitPrice = baseAmount.Value / amount;
+                    bool unitPriceIsIncompatibleWithBase = unitPrice.HasValue &&
+                        Math.Abs(amount * unitPrice.Value - baseAmount.Value) > 0.02m;
+                    if (!unitPrice.HasValue || unitPriceCalculated || unitPriceIsIncompatibleWithBase)
+                    {
+                        unitPrice = derivedUnitPrice;
+                        unitPriceCalculated = true;
+                    }
+                }
+                decimal taxRate = (item.TaxRate ?? item.IVA)!.Value;
+                decimal baseValue = baseAmount!.Value;
+                decimal lineTax = item.TaxAmount ??
+                    decimal.Round(baseValue * taxRate / 100m, 2, MidpointRounding.AwayFromZero);
+                decimal lineTotal = item.TotalAmount ?? item.DocumentLineTotal ?? baseValue + lineTax;
+                bool totalIsActuallyNet = item.TotalAmount.HasValue && lineTax > 0m &&
+                    Math.Abs(item.TotalAmount.Value - baseValue) <= 0.02m;
+                if (totalIsActuallyNet)
+                    lineTotal = baseValue + lineTax;
+
+                return new SupplierInvoiceItemDraft
+                {
+                    Position = index + 1,
+                    Description = item.Description!.Trim(),
+                    Amount = amount,
+                    UnitPrice = unitPrice ?? 0m,
+                    UnitPriceCalculated = unitPriceCalculated,
+                    IVA = taxRate,
+                    DocumentLineNetAmount = baseAmount,
+                    DocumentLineTaxAmount = lineTax,
+                    DocumentLineTotal = lineTotal
+                };
             }).ToList();
             draft.FieldOrigins["items"] = "AI";
         }
@@ -274,13 +302,20 @@ public sealed class OpenAiInvoiceExtractor
         {
             foreach (AiAdditionalChargeExtraction charge in extraction.AdditionalCharges)
             {
-                if (string.IsNullOrWhiteSpace(charge.Description) || !charge.BaseAmount.HasValue || !charge.TaxRate.HasValue)
+                if (string.IsNullOrWhiteSpace(charge.Description) || !charge.BaseAmount.HasValue || charge.BaseAmount <= 0 ||
+                    !charge.TaxRate.HasValue || charge.TaxRate is < 0 or > 100)
                 {
                     draft.Warnings.Add("OpenAI devolvió un cargo adicional incompleto; no se añade.");
                     continue;
                 }
                 decimal tax = charge.TaxAmount ?? decimal.Round(charge.BaseAmount.Value * charge.TaxRate.Value / 100m, 2, MidpointRounding.AwayFromZero);
                 decimal total = charge.TotalAmount ?? charge.BaseAmount.Value + tax;
+                decimal expectedTax = decimal.Round(charge.BaseAmount.Value * charge.TaxRate.Value / 100m, 2, MidpointRounding.AwayFromZero);
+                if (Math.Abs(tax - expectedTax) > 0.02m || total <= 0 || Math.Abs(total - (charge.BaseAmount.Value + tax)) > 0.02m)
+                {
+                    draft.Warnings.Add("OpenAI devolviÃ³ un cargo adicional incoherente; no se aÃ±ade.");
+                    continue;
+                }
                 draft.Items.Add(new SupplierInvoiceItemDraft
                 {
                     Position = draft.Items.Count + 1,

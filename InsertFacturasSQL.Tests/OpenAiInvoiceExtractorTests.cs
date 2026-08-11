@@ -162,6 +162,79 @@ public sealed class OpenAiInvoiceExtractorTests
         Assert.Equal(56.79m, draft.CalculatedTotal);
     }
 
+    [Fact]
+    public void MergeIntoDraft_DoesNotUsePrintedTotalAsUnitPrice()
+    {
+        var draft = new SupplierInvoiceDraft();
+        OpenAiInvoiceExtractor.MergeIntoDraft(draft, new AiInvoiceExtraction
+        {
+            SupplierName = "Carrefour",
+            SupplierEvidence = "Cabecera superior",
+            Items = [new AiInvoiceItemExtraction
+            {
+                Description = "Leche",
+                Quantity = 60,
+                UnitPrice = 0.88m,
+                BaseAmount = 50.77m,
+                TaxRate = 4,
+                TotalAmount = 52.80m
+            }]
+        });
+
+        Assert.Equal(50.77m / 60m, draft.Items[0].UnitPrice);
+        Assert.True(draft.Items[0].UnitPriceCalculated);
+        Assert.Equal(0.846m, draft.Items[0].PersistedUnitPrice);
+        Assert.Equal(0.01m, draft.Items[0].PersistedBaseDifference);
+    }
+
+    [Fact]
+    public void MergeIntoDraft_SkipsIncompleteAdditionalCharge()
+    {
+        var draft = new SupplierInvoiceDraft();
+        OpenAiInvoiceExtractor.MergeIntoDraft(draft, new AiInvoiceExtraction
+        {
+            SupplierName = "Carrefour",
+            SupplierEvidence = "Cabecera superior",
+            AdditionalCharges = [new AiAdditionalChargeExtraction
+            {
+                Description = "Gastos de envío", BaseAmount = 0m, TaxRate = 21m, TotalAmount = 3.99m
+            }]
+        });
+
+        Assert.Empty(draft.Items);
+        Assert.Contains(draft.Warnings, warning => warning.Contains("cargo adicional", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void MergeIntoDraft_TreatsServiceLineAmountAsNetWhenTaxIsAdded()
+    {
+        var draft = new SupplierInvoiceDraft();
+        OpenAiInvoiceExtractor.MergeIntoDraft(draft, new AiInvoiceExtraction
+        {
+            SupplierName = "OpenAI OpCo, LLC",
+            SupplierEvidence = "Cabecera superior",
+            Items = [new AiInvoiceItemExtraction
+            {
+                Description = "ChatGPT Business Subscription",
+                Quantity = 5,
+                UnitPrice = 25m,
+                BaseAmount = 125m,
+                TaxRate = 21m,
+                TotalAmount = 125m
+            }]
+        });
+
+        SupplierInvoiceItemDraft item = Assert.Single(draft.Items);
+        Assert.Equal(5m, item.Amount);
+        Assert.Equal(25m, item.UnitPrice);
+        Assert.Equal(125m, item.CalculatedNetAmount);
+        Assert.Equal(26.25m, item.CalculatedTaxAmount);
+        Assert.Equal(151.25m, item.CalculatedTotal);
+        Assert.Equal(125m, draft.CalculatedSubtotal);
+        Assert.Equal(26.25m, draft.CalculatedTaxTotal);
+        Assert.Equal(151.25m, draft.CalculatedTotal);
+    }
+
     private sealed class ThrowingHandler : HttpMessageHandler
     {
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>

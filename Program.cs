@@ -104,6 +104,11 @@ public static class Program
                 ? new ProviderResolution(providerResolver.ResolveById(connection, providerId.Value), [], null)
                 : providerResolver.Resolve(connection, draft.SupplierTaxId, draft.ProviderName, draft.ProviderName);
 
+            if (provider.Diagnostic is not null)
+            {
+                Console.WriteLine($"ProviderResolver: detectado='{provider.Diagnostic.DetectedName}' normalizado='{provider.Diagnostic.NormalizedName}' candidato='{provider.Diagnostic.SelectedCandidate ?? "ninguno"}' motivo='{provider.Diagnostic.Reason}' confianza={provider.Diagnostic.Confidence}");
+            }
+
             if (provider.Match is not null)
             {
                 draft.CompanyId = provider.Match.CompanyID;
@@ -219,7 +224,8 @@ public static class Program
 
             Console.WriteLine();
             Console.WriteLine("ESCRIBA INSERTAR PARA CONTINUAR");
-            if (!string.Equals(Console.ReadLine(), "INSERTAR", StringComparison.Ordinal))
+            string? confirmation = Console.ReadLine();
+            if (!string.Equals(confirmation, "INSERTAR", StringComparison.Ordinal))
             {
                 Console.WriteLine("Ejecución cancelada. No se modificó la base de datos.");
                 return 0;
@@ -245,6 +251,14 @@ public static class Program
             {
                 Console.WriteLine($"Error de ejecución transaccional: {ex.Message}");
                 Console.WriteLine("La transacción fue revertida si ya había comenzado.");
+                return FailureExitCode;
+            }
+            catch (SupplierInvoiceExecutionException ex)
+            {
+                Console.WriteLine("DIAGNÓSTICO POST-INSERT ANTES DE ROLLBACK");
+                foreach (string diagnostic in ex.Diagnostics) Console.WriteLine(diagnostic);
+                Console.WriteLine($"Error de ejecución transaccional: {ex.Message}");
+                Console.WriteLine("La transacción fue revertida.");
                 return FailureExitCode;
             }
         }

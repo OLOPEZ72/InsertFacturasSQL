@@ -191,6 +191,11 @@ public sealed class SupplierInvoiceDraftBuilder
             {
                 draft.ValidationErrors.Add($"{prefix} UnitPrice no cabe en numeric(18,3).");
             }
+            if (item.DocumentLineNetAmount.HasValue && item.PersistedBaseDifference > TotalTolerance)
+            {
+                draft.ValidationErrors.Add(
+                    $"{prefix} no puede reproducir la base documental ({item.DocumentLineNetAmount.Value:F2}) con numeric(18,3); diferencia persistida {item.PersistedBaseDifference:F2}. Revise Amount o UnitPrice.");
+            }
 
             if (item.IVA is < 0 or > 100)
             {
@@ -419,6 +424,10 @@ public sealed class SupplierInvoiceDraftBuilder
 
     private static (decimal? Base, decimal? Tax, decimal? Total) ReadRetailTaxSummary(string[] lines)
     {
+        decimal baseTotal = 0m;
+        decimal taxTotal = 0m;
+        decimal total = 0m;
+        bool found = false;
         foreach (string line in lines)
         {
             if (!NormalizeText(line).StartsWith("IVA ", StringComparison.Ordinal)) continue;
@@ -428,12 +437,15 @@ public sealed class SupplierInvoiceDraftBuilder
             if (values.Length >= 6 &&
                 TryParseDecimal(values[1], out decimal basis) &&
                 TryParseDecimal(values[2], out decimal tax) &&
-                TryParseDecimal(values[^1], out decimal total))
+                TryParseDecimal(values[^1], out decimal lineTotal))
             {
-                return (basis, tax, total);
+                baseTotal += basis;
+                taxTotal += tax;
+                total += lineTotal;
+                found = true;
             }
         }
-        return (null, null, null);
+        return found ? (baseTotal, taxTotal, total) : (null, null, null);
     }
 
     private static string[] GetIssuerBlock(string[] lines)

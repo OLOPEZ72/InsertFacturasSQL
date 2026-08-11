@@ -96,6 +96,22 @@ public sealed class SupplierInvoiceSqlPreviewGeneratorTests
     }
 
     [Fact]
+    public void Generate_UsesNumericThreeScaleUnitPriceForAiDerivedBase()
+    {
+        var draft = CreateValidDraft(amount: 60m, unitPrice: 50.77m / 60m, iva: 4m);
+        draft.Items[0] = new SupplierInvoiceItemDraft
+        {
+            Position = 1, Description = "Leche", Amount = 60m, UnitPrice = 50.77m / 60m,
+            IVA = 4m, DocumentLineNetAmount = 50.77m, CommercialProjectId = 456
+        };
+
+        SupplierInvoiceSqlPreview preview = _generator.Generate(draft);
+
+        Assert.Equal(0.846m, preview.Parameters.Single(value => value.Name == "@Item1UnitPrice").Value);
+        Assert.Equal("0.846", preview.Parameters.Single(value => value.Name == "@Item1UnitPrice").DisplayValue);
+    }
+
+    [Fact]
     public void Generate_PreservesInvoiceDateAsSmallDateTimeParameter()
     {
         var draft = CreateValidDraft(invoiceDate: new DateTime(2026, 8, 6));

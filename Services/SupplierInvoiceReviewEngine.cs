@@ -49,14 +49,14 @@ public sealed class SupplierInvoiceReviewEngine
         switch (field.ToLowerInvariant())
         {
             case "description":
-                draft.Items[position - 1] = Copy(item, item.Amount, item.UnitPrice, item.IVA, value);
+                draft.Items[position - 1] = Copy(item, item.Amount, item.UnitPrice, item.IVA, value, false);
                 return true;
             case "quantity" when decimal.TryParse(value, NumberStyles.Number, CultureInfo.InvariantCulture, out decimal quantity):
-                draft.Items[position - 1] = Copy(item, quantity, item.UnitPrice, item.IVA, item.Description); return true;
+                draft.Items[position - 1] = Copy(item, quantity, item.UnitPrice, item.IVA, item.Description, true); return true;
             case "price" when decimal.TryParse(value, NumberStyles.Number, CultureInfo.InvariantCulture, out decimal price):
-                draft.Items[position - 1] = Copy(item, item.Amount, price, item.IVA, item.Description); return true;
+                draft.Items[position - 1] = Copy(item, item.Amount, price, item.IVA, item.Description, true); return true;
             case "iva" when decimal.TryParse(value, NumberStyles.Number, CultureInfo.InvariantCulture, out decimal iva):
-                draft.Items[position - 1] = Copy(item, item.Amount, item.UnitPrice, iva, item.Description); return true;
+                draft.Items[position - 1] = Copy(item, item.Amount, item.UnitPrice, iva, item.Description, true); return true;
             default: return false;
         }
     }
@@ -84,11 +84,13 @@ public sealed class SupplierInvoiceReviewEngine
         return true;
     }
 
-    private static SupplierInvoiceItemDraft Copy(SupplierInvoiceItemDraft item, decimal amount, decimal price, decimal iva, string description) => new()
+    private static SupplierInvoiceItemDraft Copy(SupplierInvoiceItemDraft item, decimal amount, decimal price, decimal iva, string description, bool recalculateAmounts) => new()
     {
         Position = item.Position, Description = description, Amount = amount, UnitPrice = price, IVA = iva,
-        DiscountPercent = item.DiscountPercent, DocumentLineNetAmount = item.DocumentLineNetAmount,
-        DocumentLineTaxAmount = item.DocumentLineTaxAmount, DocumentLineTotal = item.DocumentLineTotal,
+        DiscountPercent = item.DiscountPercent,
+        DocumentLineNetAmount = recalculateAmounts ? null : item.DocumentLineNetAmount,
+        DocumentLineTaxAmount = recalculateAmounts ? null : item.DocumentLineTaxAmount,
+        DocumentLineTotal = recalculateAmounts ? null : item.DocumentLineTotal,
         CommercialProjectId = item.CommercialProjectId, UnitPriceCalculated = false
     };
 }

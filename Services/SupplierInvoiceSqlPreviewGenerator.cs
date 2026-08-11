@@ -68,7 +68,17 @@ public sealed class SupplierInvoiceSqlPreviewGenerator : ISupplierInvoiceSqlPrev
         sql.AppendLine("    WHERE ProviderOrderID = @ProviderOrderID AND Disabled = 0;");
         sql.AppendLine("    SET @PersistedFinalTotal = @PersistedBaseTotal + @PersistedTaxTotal;");
         sql.AppendLine("    IF ABS(@PersistedFinalTotal - @ExpectedInvoiceTotal) > @InvoiceTotalTolerance");
+        sql.AppendLine("    BEGIN");
+        sql.AppendLine("        SELECT @ProviderOrderID AS ProviderOrderID, Description, Amount, UnitPrice, Discount, IVA, CProjectID,");
+        sql.AppendLine("            ROUND(Amount * UnitPrice * (1 - ISNULL(Discount, 0) / 100), 2) AS CalculatedBase,");
+        sql.AppendLine("            ROUND(ROUND(Amount * UnitPrice * (1 - ISNULL(Discount, 0) / 100), 2) * IVA / 100, 2) AS CalculatedTax");
+        sql.AppendLine("        FROM dbo.ItemsProviderOrder");
+        sql.AppendLine("        WHERE ProviderOrderID = @ProviderOrderID AND Disabled = 0;");
+        sql.AppendLine("        SELECT @PersistedBaseTotal AS PersistedBaseTotal, @PersistedTaxTotal AS PersistedTaxTotal,");
+        sql.AppendLine("            @PersistedFinalTotal AS PersistedFinalTotal, @ExpectedInvoiceTotal AS ExpectedInvoiceTotal,");
+        sql.AppendLine("            ABS(@PersistedFinalTotal - @ExpectedInvoiceTotal) AS Difference, @InvoiceTotalTolerance AS Tolerance;");
         sql.AppendLine("        RAISERROR ('El total persistido no coincide con el total de la factura.', 16, 1);");
+        sql.AppendLine("    END;");
         sql.AppendLine("    SELECT @ProviderOrderID AS ProviderOrderID;");
 
         sql.AppendLine();
@@ -149,7 +159,7 @@ public sealed class SupplierInvoiceSqlPreviewGenerator : ISupplierInvoiceSqlPrev
             result.Add(new($"{prefix}CProjectID", item.CommercialProjectId!.Value, SqlDbType.Int));
             result.Add(new($"{prefix}Description", item.Description, SqlDbType.NVarChar, Size: 250));
             result.Add(new($"{prefix}Amount", item.Amount, SqlDbType.Decimal, Precision: 18, Scale: 2));
-            result.Add(new($"{prefix}UnitPrice", item.UnitPrice, SqlDbType.Decimal, Precision: 18, Scale: 3));
+            result.Add(new($"{prefix}UnitPrice", item.PersistedUnitPrice, SqlDbType.Decimal, Precision: 18, Scale: 3));
             result.Add(new($"{prefix}Discount", item.DiscountPercent, SqlDbType.Decimal, Precision: 18, Scale: 2));
             result.Add(new($"{prefix}IVA", item.IVA, SqlDbType.Decimal, Precision: 18, Scale: 2));
             result.Add(new($"{prefix}Disabled", false, SqlDbType.Bit));
