@@ -57,6 +57,20 @@ public sealed class SupplierInvoiceSqlPreviewGenerator : ISupplierInvoiceSqlPrev
         }
 
         sql.AppendLine();
+        sql.AppendLine("    -- ValidaciÃ³n post-inserciÃ³n sobre los valores realmente almacenados");
+        sql.AppendLine("    DECLARE @PersistedBaseTotal decimal(18,2);");
+        sql.AppendLine("    DECLARE @PersistedTaxTotal decimal(18,2);");
+        sql.AppendLine("    DECLARE @PersistedFinalTotal decimal(18,2);");
+        sql.AppendLine("    SELECT");
+        sql.AppendLine("        @PersistedBaseTotal = COALESCE(SUM(ROUND(Amount * UnitPrice * (1 - ISNULL(Discount, 0) / 100), 2)), 0),");
+        sql.AppendLine("        @PersistedTaxTotal = COALESCE(SUM(ROUND(ROUND(Amount * UnitPrice * (1 - ISNULL(Discount, 0) / 100), 2) * IVA / 100, 2)), 0)");
+        sql.AppendLine("    FROM dbo.ItemsProviderOrder");
+        sql.AppendLine("    WHERE ProviderOrderID = @ProviderOrderID AND Disabled = 0;");
+        sql.AppendLine("    SET @PersistedFinalTotal = @PersistedBaseTotal + @PersistedTaxTotal;");
+        sql.AppendLine("    IF ABS(@PersistedFinalTotal - @ExpectedInvoiceTotal) > @InvoiceTotalTolerance");
+        sql.AppendLine("        THROW 51000, 'El total persistido no coincide con el total de la factura.', 1;");
+
+        sql.AppendLine();
         sql.AppendLine("    COMMIT TRANSACTION;");
         sql.AppendLine("END TRY");
         sql.AppendLine("BEGIN CATCH");
@@ -120,6 +134,9 @@ public sealed class SupplierInvoiceSqlPreviewGenerator : ISupplierInvoiceSqlPrev
             new("@Charget", draft.Charget, SqlDbType.Bit),
             new("@CurrencyID", draft.CurrencyId, SqlDbType.Int)
         };
+
+        result.Add(new("@ExpectedInvoiceTotal", draft.DocumentTotal ?? draft.CalculatedTotal, SqlDbType.Decimal, Precision: 18, Scale: 2));
+        result.Add(new("@InvoiceTotalTolerance", SupplierInvoicePostInsertValidator.DefaultTolerance, SqlDbType.Decimal, Precision: 18, Scale: 2));
 
         for (int index = 0; index < draft.Items.Count; index++)
         {

@@ -192,6 +192,38 @@ BASE IMPONIBLE GASTOS DE ENVÍO 3,30 EUR
         Assert.Contains("imagen o logotipo", draft.Warnings.Single(w => w.Contains("imagen", StringComparison.OrdinalIgnoreCase)));
     }
 
+    [Fact]
+    public void Validate_ReconcilesRetailLinesAndAllowsRoundedNumericUnitPrice()
+    {
+        var draft = new SupplierInvoiceDraft
+        {
+            CompanyId = 1,
+            CommercialProjectId = 1970,
+            CommercialProjectIsValid = true,
+            InvoiceNumber = "RETAIL-1",
+            InvoiceDate = new DateTime(2026, 4, 14),
+            DocumentSubtotal = 50.77m,
+            DocumentTaxTotal = 6.02m,
+            DocumentTotal = 56.79m,
+            Items =
+            [
+                new SupplierInvoiceItemDraft { Position = 1, Description = "Leche", Amount = 60, UnitPrice = 50.77m / 60m, IVA = 4, CommercialProjectId = 1970 },
+                new SupplierInvoiceItemDraft { Position = 2, Description = "Envío", Amount = 1, UnitPrice = 3.30m, IVA = 21, CommercialProjectId = 1970 }
+            ]
+        };
+
+        new SupplierInvoiceDraftBuilder().Validate(draft);
+
+        Assert.Equal(54.07m, draft.CalculatedSubtotal);
+        Assert.Equal(2.72m, draft.CalculatedTaxTotal);
+        Assert.Equal(56.79m, draft.CalculatedTotal);
+        Assert.Equal(54.07m, draft.DocumentSubtotal);
+        Assert.Equal(2.72m, draft.DocumentTaxTotal);
+        Assert.DoesNotContain(draft.ValidationErrors, error => error.Contains("UnitPrice no cabe", StringComparison.Ordinal));
+        Assert.DoesNotContain(draft.ValidationErrors, error => error.Contains("subtotal calculado", StringComparison.OrdinalIgnoreCase));
+        Assert.DoesNotContain(draft.ValidationErrors, error => error.Contains("IVA calculado", StringComparison.OrdinalIgnoreCase));
+    }
+
     [Theory]
     [InlineData("1 de enero de 2026", 1)]
     [InlineData("1 de febrero de 2026", 2)]

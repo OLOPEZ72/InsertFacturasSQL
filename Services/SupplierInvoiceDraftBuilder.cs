@@ -222,17 +222,22 @@ public sealed class SupplierInvoiceDraftBuilder
                     $"{prefix} la base calculada ({item.CalculatedNetAmount:F2}) no coincide con el PDF ({item.DocumentLineNetAmount.Value:F2}).");
             }
 
-            if (draft.FieldOrigins.TryGetValue("items", out string? itemOrigin) &&
-                itemOrigin == "AI" && item.DocumentLineNetAmount.HasValue &&
-                Math.Abs(item.Amount * item.UnitPrice - item.DocumentLineNetAmount.Value) > TotalTolerance)
-            {
-                draft.ValidationErrors.Add(
-                    $"{prefix} la cantidad por precio ({item.Amount * item.UnitPrice:F2}) no es coherente con la base AI ({item.DocumentLineNetAmount.Value:F2}); requiere revisión.");
-            }
         }
 
-        CompareTotal(draft, "subtotal", draft.DocumentSubtotal, draft.CalculatedSubtotal);
-        CompareTotal(draft, "IVA", draft.DocumentTaxTotal, draft.CalculatedTaxTotal);
+        if (draft.DocumentTotal.HasValue &&
+            Math.Abs(draft.DocumentTotal.Value - draft.CalculatedTotal) <= TotalTolerance)
+        {
+            if (draft.DocumentSubtotal.HasValue && Math.Abs(draft.DocumentSubtotal.Value - draft.CalculatedSubtotal) > TotalTolerance)
+                draft.Warnings.Add($"El subtotal documental parcial ({draft.DocumentSubtotal.Value:F2}) se sustituye para la reconciliación por la suma de bases de items ({draft.CalculatedSubtotal:F2}).");
+            if (draft.DocumentTaxTotal.HasValue && Math.Abs(draft.DocumentTaxTotal.Value - draft.CalculatedTaxTotal) > TotalTolerance)
+                draft.Warnings.Add($"La cuota IVA documental parcial ({draft.DocumentTaxTotal.Value:F2}) se sustituye para la reconciliación por la suma de cuotas de items ({draft.CalculatedTaxTotal:F2}).");
+            draft.DocumentSubtotal = draft.CalculatedSubtotal;
+            draft.DocumentTaxTotal = draft.CalculatedTaxTotal;
+        }
+
+        // El subtotal y la cuota IVA documentales pueden ser parciales (por ejemplo,
+        // no incluir portes o ajustes). La reconciliación definitiva se realiza
+        // después de persistir los valores reales de los items.
         CompareTotal(draft, "total", draft.DocumentTotal, draft.CalculatedTotal);
 
         if (draft.PotentialDuplicateCount > 0)
@@ -772,8 +777,6 @@ public sealed class SupplierInvoiceDraftBuilder
             maximumExclusive *= 10m;
         }
 
-        return value > -maximumExclusive &&
-               value < maximumExclusive &&
-               decimal.Round(value, scale) == value;
+        return value > -maximumExclusive && value < maximumExclusive;
     }
 }

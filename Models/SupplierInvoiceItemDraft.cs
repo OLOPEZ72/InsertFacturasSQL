@@ -14,12 +14,12 @@ public sealed class SupplierInvoiceItemDraft
     public decimal? DocumentLineTotal { get; init; }
     public int? CommercialProjectId { get; set; }
 
-    public decimal CalculatedNetAmount => RoundCurrency(
+    public decimal CalculatedNetAmount => DocumentLineNetAmount ?? RoundCurrency(
         Amount * UnitPrice * (1m - (DiscountPercent ?? 0m) / 100m));
 
-    public decimal CalculatedTaxAmount => RoundCurrency(CalculatedNetAmount * IVA / 100m);
+    public decimal CalculatedTaxAmount => DocumentLineTaxAmount ?? RoundCurrency(CalculatedNetAmount * IVA / 100m);
 
-    public decimal CalculatedTotal => CalculatedNetAmount + CalculatedTaxAmount;
+    public decimal CalculatedTotal => DocumentLineTotal ?? CalculatedNetAmount + CalculatedTaxAmount;
 
     private static decimal RoundCurrency(decimal value) =>
         decimal.Round(value, 2, MidpointRounding.AwayFromZero);

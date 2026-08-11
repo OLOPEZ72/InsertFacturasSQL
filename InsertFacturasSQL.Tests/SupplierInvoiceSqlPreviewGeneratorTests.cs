@@ -24,6 +24,10 @@ public sealed class SupplierInvoiceSqlPreviewGeneratorTests
         Assert.Contains("BEGIN TRANSACTION", preview.CommandText);
         Assert.Contains("COMMIT TRANSACTION", preview.CommandText);
         Assert.Contains("ROLLBACK TRANSACTION", preview.CommandText);
+        Assert.Contains("SELECT", preview.CommandText);
+        Assert.Contains("@PersistedFinalTotal", preview.CommandText);
+        Assert.Contains("ItemsProviderOrder", preview.CommandText);
+        Assert.Equal(0.02m, preview.Parameters.Single(value => value.Name == "@InvoiceTotalTolerance").Value);
         Assert.DoesNotContain(draft.ProviderName, preview.CommandText);
         Assert.DoesNotContain(draft.InvoiceNumber, preview.CommandText);
     }
