@@ -22,6 +22,8 @@ public sealed class SupplierInvoiceSqlPreviewGeneratorTests
         Assert.Contains("@Provider", preview.CommandText);
         Assert.Contains("CONVERT(int, SCOPE_IDENTITY())", preview.CommandText);
         Assert.Contains("SELECT @ProviderOrderID AS ProviderOrderID", preview.CommandText);
+        Assert.Contains("RAISERROR", preview.CommandText);
+        Assert.DoesNotContain("THROW", preview.CommandText, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("BEGIN TRANSACTION", preview.CommandText);
         Assert.Contains("COMMIT TRANSACTION", preview.CommandText);
         Assert.Contains("ROLLBACK TRANSACTION", preview.CommandText);
