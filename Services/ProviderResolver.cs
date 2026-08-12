@@ -7,123 +7,83 @@ namespace InsertFacturasSQL.Services;
 public sealed class ProviderResolver : IProviderResolver
 {
     private const string SelectByIdSql = """
-SELECT TOP (1) CompanyID, Name
-FROM dbo.Companies
-WHERE CompanyID = @CompanyID;
+SELECT TOP (1) CompanyID, Name FROM dbo.Companies WHERE CompanyID = @CompanyID;
 """;
     private const string SelectByTaxIdSql = """
-SELECT TOP (10) CompanyID, Name
-FROM dbo.Companies
-WHERE Provider = 1
-  AND Disabled IS NULL
+SELECT TOP (10) CompanyID, Name FROM dbo.Companies
+WHERE Provider = 1 AND Disabled IS NULL
   AND UPPER(REPLACE(REPLACE(REPLACE(REPLACE(LTRIM(RTRIM(CIF)), ' ', ''), '-', ''), '.', ''), '/', '')) = @TaxId
 ORDER BY CompanyID;
 """;
-
     private const string SelectByNameSql = """
-SELECT TOP (10) CompanyID, Name
-FROM dbo.Companies
-WHERE Provider = 1
-  AND Disabled IS NULL
-  AND Name LIKE @NamePattern ESCAPE '\'
+SELECT TOP (10) CompanyID, Name FROM dbo.Companies
+WHERE Provider = 1 AND Disabled IS NULL AND Name LIKE @NamePattern ESCAPE '\'
 ORDER BY CompanyID;
 """;
 
-    public ProviderResolution Resolve(
-        SqlConnection connection,
-        string? taxId,
-        string? legalName,
-        string? tradeName)
+    public ProviderResolution Resolve(SqlConnection connection, string? taxId, string? legalName, string? tradeName)
     {
         string normalizedTaxId = NormalizeIdentifier(taxId);
         bool taxWasProvided = normalizedTaxId.Length > 0;
-        if (normalizedTaxId.Length > 0)
+        if (taxWasProvided)
         {
-            var taxMatches = ReadMatches(connection, SelectByTaxIdSql, "@TaxId", normalizedTaxId);
+            List<ProviderMatch> taxMatches = ReadMatches(connection, SelectByTaxIdSql, "@TaxId", normalizedTaxId);
             if (taxMatches.Count == 1)
             {
-                return new ProviderResolution(taxMatches[0] with { MatchType = "TaxIdExact" }, taxMatches, null);
+                ProviderMatch match = taxMatches[0] with { MatchType = "TaxIdExact" };
+                return new ProviderResolution(match, taxMatches, null,
+                    new ProviderResolutionDiagnostic(taxId ?? "", normalizedTaxId, match.CompanyName, "VAT/CIF/NIF exacto normalizado", "Muy alta"));
             }
-
             if (taxMatches.Count > 1)
-            {
-                return new ProviderResolution(
-                    null,
-                    taxMatches,
-                    "El CIF/NIF/VAT coincide con varios proveedores activos.");
-            }
-
-            if (taxMatches.Count == 0)
-            {
-                return new ProviderResolution(
-                    null,
-                    [],
-                    "El CIF/NIF/VAT exacto no existe entre los proveedores activos; no se selecciona ninguna empresa por nombre.");
-            }
+                return new ProviderResolution(null, taxMatches, "El CIF/NIF/VAT coincide con varios proveedores activos.",
+                    new ProviderResolutionDiagnostic(taxId ?? "", normalizedTaxId, null, "VAT exacto ambiguo", "Baja"));
         }
 
-        var names = new[] { legalName, tradeName }
+        string[] names = new[] { legalName, tradeName }
             .Where(value => !string.IsNullOrWhiteSpace(value))
             .Select(value => value!.Trim())
-            .Distinct(StringComparer.OrdinalIgnoreCase);
-
-        var allCandidates = new Dictionary<int, ProviderMatch>();
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        var equivalent = new Dictionary<int, ProviderMatch>();
+        var related = new Dictionary<int, ProviderMatch>();
         foreach (string name in names)
         {
-            string pattern = $"%{EscapeLikePattern(name)}%";
-            var candidates = ReadMatches(connection, SelectByNameSql, "@NamePattern", pattern);
-
-            var exact = candidates
-                .Where(candidate => NormalizeName(candidate.CompanyName) == NormalizeName(name))
-                .ToList();
-
-            if (exact.Count == 1)
+            string normalizedName = NormalizeName(name);
+            string[] tokens = SignificantTokens(normalizedName);
+            foreach (string token in tokens.DefaultIfEmpty(normalizedName))
             {
-                return new ProviderResolution(exact[0] with { MatchType = "NameExact" }, exact, null);
-            }
-
-            foreach (var candidate in candidates)
-            {
-                if (!taxWasProvided)
-                    allCandidates[candidate.CompanyID] = candidate with { MatchType = "NamePartial" };
-            }
-        }
-
-        if (allCandidates.Count == 0 && !taxWasProvided)
-        {
-            string? token = names
-                .Select(FindSignificantToken)
-                .FirstOrDefault(value => !string.IsNullOrWhiteSpace(value));
-            if (token is not null)
-            {
-                var related = ReadMatches(
-                    connection,
-                    SelectByNameSql,
-                    "@NamePattern",
-                    $"%{EscapeLikePattern(token)}%");
-                foreach (var candidate in related)
+                foreach (ProviderMatch candidate in ReadMatches(connection, SelectByNameSql, "@NamePattern", $"%{EscapeLikePattern(token)}%"))
                 {
-                    allCandidates[candidate.CompanyID] = candidate with { MatchType = "SuggestedByToken" };
-                }
-
-                if (allCandidates.Count > 0)
-                {
-                    return new ProviderResolution(
-                        null,
-                        allCandidates.Values.ToList(),
-                        "No existe una coincidencia exacta; se muestran candidatos relacionados sin seleccionar ninguno automáticamente.");
+                    related[candidate.CompanyID] = candidate with { MatchType = "NameCandidate" };
+                    if (SignificantTokens(NormalizeName(candidate.CompanyName)).SequenceEqual(tokens, StringComparer.Ordinal))
+                        equivalent[candidate.CompanyID] = candidate with { MatchType = "NameNormalizedEquivalent" };
                 }
             }
         }
 
-        if (allCandidates.Count == 1)
+        string detectedName = names.FirstOrDefault() ?? "";
+        string normalizedDetectedName = NormalizeName(detectedName);
+        if (equivalent.Count == 1)
         {
-            return new ProviderResolution(null, allCandidates.Values.ToList(), "La coincidencia parcial no tiene confianza suficiente; confirme el proveedor.");
+            ProviderMatch selected = equivalent.Values.Single();
+            string reason = taxWasProvided
+                ? "VAT exacto no encontrado; nombre normalizado equivalente único."
+                : "Nombre normalizado equivalente único.";
+            return new ProviderResolution(selected, [selected], reason,
+                new ProviderResolutionDiagnostic(detectedName, normalizedDetectedName, selected.CompanyName, reason, "Alta"));
         }
+        if (equivalent.Count > 1)
+            return new ProviderResolution(null, equivalent.Values.ToList(), "La búsqueda por nombre normalizado no es inequívoca.",
+                new ProviderResolutionDiagnostic(detectedName, normalizedDetectedName, null, "Varios candidatos equivalentes", "Baja"));
 
-        return allCandidates.Count > 1
-            ? new ProviderResolution(null, allCandidates.Values.ToList(), "La búsqueda por nombre no es inequívoca.")
-            : new ProviderResolution(null, [], "No se encontró un proveedor activo.");
+        if (related.Count == 0)
+            return new ProviderResolution(null, [], taxWasProvided
+                ? "El VAT exacto no existe y no se encontró candidato por nombre."
+                : "No se encontró un proveedor activo.",
+                new ProviderResolutionDiagnostic(detectedName, normalizedDetectedName, null, "Sin candidato equivalente", "Baja"));
+
+        return new ProviderResolution(null, related.Values.ToList(), "Se muestran candidatos relacionados; no se selecciona automáticamente.",
+            new ProviderResolutionDiagnostic(detectedName, normalizedDetectedName, null, "Coincidencia parcial controlada", "Media"));
     }
 
     public ProviderMatch? ResolveById(SqlConnection connection, int companyId)
@@ -131,113 +91,62 @@ ORDER BY CompanyID;
         using var command = new SqlCommand(SelectByIdSql, connection);
         command.Parameters.Add("@CompanyID", System.Data.SqlDbType.Int).Value = companyId;
         using var reader = command.ExecuteReader();
-        return reader.Read()
-            ? new ProviderMatch(reader.GetInt32(0), reader.IsDBNull(1) ? "" : reader.GetString(1), "ManualId")
-            : null;
+        return reader.Read() ? new ProviderMatch(reader.GetInt32(0), reader.IsDBNull(1) ? "" : reader.GetString(1), "ManualId") : null;
     }
 
-    // Compatibilidad con el importador heredado. Program.cs ya no expone ese flujo de escritura.
-    public ProviderMatch? Resolve(
-        SqlConnection connection,
-        SqlTransaction transaction,
-        string providerName)
+    public ProviderMatch? Resolve(SqlConnection connection, SqlTransaction transaction, string providerName)
     {
-        const string sql = """
-SELECT TOP (10) CompanyID, Name
-FROM dbo.Companies
-WHERE Provider = 1
-  AND Disabled IS NULL
-  AND Name LIKE @NamePattern ESCAPE '\'
-ORDER BY CompanyID;
-""";
-
-        using var command = new SqlCommand(sql, connection, transaction);
-        command.Parameters.Add("@NamePattern", System.Data.SqlDbType.NVarChar, 255).Value =
-            $"%{EscapeLikePattern(providerName)}%";
-
+        using var command = new SqlCommand(SelectByNameSql, connection, transaction);
+        command.Parameters.Add("@NamePattern", System.Data.SqlDbType.NVarChar, 255).Value = $"%{EscapeLikePattern(providerName)}%";
         using var reader = command.ExecuteReader();
         var matches = new List<ProviderMatch>();
-        while (reader.Read())
-        {
-            matches.Add(new ProviderMatch(
-                reader.GetInt32(0),
-                reader.IsDBNull(1) ? "" : reader.GetString(1),
-                "LegacyName"));
-        }
-
-        var exact = matches.FirstOrDefault(match => NormalizeName(match.CompanyName) == NormalizeName(providerName));
-        return exact ?? (matches.Count == 1 ? matches[0] : null);
+        while (reader.Read()) matches.Add(new ProviderMatch(reader.GetInt32(0), reader.IsDBNull(1) ? "" : reader.GetString(1), "LegacyName"));
+        return matches.FirstOrDefault(match => NormalizeName(match.CompanyName) == NormalizeName(providerName)) ?? (matches.Count == 1 ? matches[0] : null);
     }
 
-    private static List<ProviderMatch> ReadMatches(
-        SqlConnection connection,
-        string sql,
-        string parameterName,
-        string parameterValue)
+    public static string NormalizeCompanyName(string value) => NormalizeName(value);
+
+    private static List<ProviderMatch> ReadMatches(SqlConnection connection, string sql, string parameterName, string parameterValue)
     {
         using var command = new SqlCommand(sql, connection);
         command.Parameters.Add(parameterName, System.Data.SqlDbType.NVarChar, 255).Value = parameterValue;
-
         using var reader = command.ExecuteReader();
         var matches = new List<ProviderMatch>();
-        while (reader.Read())
-        {
-            matches.Add(new ProviderMatch(
-                reader.GetInt32(0),
-                reader.IsDBNull(1) ? "" : reader.GetString(1),
-                "Candidate"));
-        }
-
+        while (reader.Read()) matches.Add(new ProviderMatch(reader.GetInt32(0), reader.IsDBNull(1) ? "" : reader.GetString(1), "Candidate"));
         return matches;
     }
 
-    private static string EscapeLikePattern(string value) =>
-        value.Replace("\\", "\\\\", StringComparison.Ordinal)
-            .Replace("%", "\\%", StringComparison.Ordinal)
-            .Replace("_", "\\_", StringComparison.Ordinal)
-            .Replace("[", "\\[", StringComparison.Ordinal);
+    private static string EscapeLikePattern(string value) => value.Replace("\\", "\\\\").Replace("%", "\\%").Replace("_", "\\_").Replace("[", "\\[");
 
-    private static string NormalizeIdentifier(string? value)
-    {
-        if (string.IsNullOrWhiteSpace(value))
-        {
-            return "";
-        }
-
-        return new string(value
-            .Where(char.IsLetterOrDigit)
-            .Select(char.ToUpperInvariant)
-            .ToArray());
-    }
+    private static string NormalizeIdentifier(string? value) => string.IsNullOrWhiteSpace(value) ? "" : new string(value.Where(char.IsLetterOrDigit).Select(char.ToUpperInvariant).ToArray());
 
     private static string NormalizeName(string value)
     {
         string decomposed = value.Normalize(NormalizationForm.FormD);
         var result = new StringBuilder(decomposed.Length);
-
         foreach (char character in decomposed)
         {
-            UnicodeCategory category = CharUnicodeInfo.GetUnicodeCategory(character);
-            if (category == UnicodeCategory.NonSpacingMark)
-            {
-                continue;
-            }
-
+            if (CharUnicodeInfo.GetUnicodeCategory(character) == UnicodeCategory.NonSpacingMark) continue;
             result.Append(char.IsLetterOrDigit(character) ? char.ToUpperInvariant(character) : ' ');
         }
-
-        return string.Join(' ', result.ToString().Split(' ', StringSplitOptions.RemoveEmptyEntries));
+        string[] ignored = ["LLC", "LTD", "LIMITED", "INC", "OPCO", "CORP", "CORPORATION", "SA", "SL", "GMBH"];
+        string[] rawTokens = result.ToString().Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        var tokens = new List<string>();
+        for (int index = 0; index < rawTokens.Length; index++)
+        {
+            if (index + 1 < rawTokens.Length && rawTokens[index] is "S" or "L" && rawTokens[index + 1] is "A" or "L")
+            {
+                index++;
+                continue;
+            }
+            tokens.Add(rawTokens[index]);
+        }
+        return string.Join(' ', tokens.Where(token => !ignored.Contains(token, StringComparer.Ordinal)));
     }
 
-    private static string? FindSignificantToken(string value)
-    {
-        string[] ignored = ["LLC", "LTD", "LIMITED", "INC", "CORP", "CORPORATION", "SL", "SA", "GMBH", "BV", "SARL"];
-        return NormalizeName(value)
-            .Split(' ', StringSplitOptions.RemoveEmptyEntries)
-            .Where(token => token.Length >= 4 && !ignored.Contains(token, StringComparer.Ordinal))
-            .OrderByDescending(token => token.Length)
-            .FirstOrDefault();
-    }
+    private static string[] SignificantTokens(string normalizedName) => normalizedName.Split(' ', StringSplitOptions.RemoveEmptyEntries).Where(token => token.Length >= 2).ToArray();
 }
+
+public sealed record ProviderResolutionDiagnostic(string DetectedName, string NormalizedName, string? SelectedCandidate, string Reason, string Confidence);
 
 public sealed record ProviderMatch(int CompanyID, string CompanyName, string MatchType);

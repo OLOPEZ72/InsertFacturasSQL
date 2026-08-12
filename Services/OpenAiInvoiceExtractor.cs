@@ -2,6 +2,7 @@ using System.Net.Http.Headers;
 using System.Globalization;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using InsertFacturasSQL.Models;
 
 namespace InsertFacturasSQL.Services;
@@ -36,7 +37,7 @@ public sealed class OpenAiInvoiceExtractor
         FileInfo? fileInfo = !string.IsNullOrWhiteSpace(pdfPath) && File.Exists(pdfPath) ? new FileInfo(pdfPath) : null;
         bool fileSent = false;
         int? responseStatus = null;
-        const string model = "gpt-4o-mini";
+        string model = ResolveModel(Environment.GetEnvironmentVariable("OPENAI_INVOICE_MODEL"));
         if (string.IsNullOrWhiteSpace(apiKey))
             return Failure("credential-check", null, null, null, "OPENAI_API_KEY no está configurada; se conserva el parser local.", model, false, false, fileInfo);
 
@@ -57,7 +58,7 @@ public sealed class OpenAiInvoiceExtractor
 
             var payload = new
             {
-                model = "gpt-4o-mini",
+                model,
                 instructions = "Extrae datos de facturas y devuelve únicamente JSON válido.",
                 text = new { format = BuildJsonSchemaFormat() },
                 input = new[] { new { role = "user", content } }
@@ -90,6 +91,9 @@ public sealed class OpenAiInvoiceExtractor
         }
     }
 
+    public static string ResolveModel(string? configuredModel) =>
+        string.IsNullOrWhiteSpace(configuredModel) ? "gpt-4o-mini" : configuredModel.Trim();
+
     private static AiExtractionResult Failure(string stage, int? status, string? type, string? code, string message, string model, bool keyExists, bool fileSent, FileInfo? fileInfo) =>
         new(null, message, new AiCallDiagnostic(stage, Endpoint, status, type, code, Sanitize(message), model, keyExists, fileSent, "application/pdf", fileInfo?.Length));
 
@@ -108,6 +112,8 @@ public sealed class OpenAiInvoiceExtractor
                 supplierTaxId = new { type = new[] { "string", "null" } },
                 customerName = new { type = new[] { "string", "null" } },
                 customerTaxId = new { type = new[] { "string", "null" } },
+                supplierEvidence = new { type = new[] { "string", "null" } },
+                customerEvidence = new { type = new[] { "string", "null" } },
                 invoiceNumber = new { type = new[] { "string", "null" } },
                 invoiceDate = new { type = new[] { "string", "null" } },
                 dueDate = new { type = new[] { "string", "null" } },
@@ -117,9 +123,10 @@ public sealed class OpenAiInvoiceExtractor
                 total = new { type = new[] { "number", "null" } },
                 confidence = new { type = "number", minimum = 0, maximum = 100 },
                 warnings = new { type = "array", items = new { type = "string" } },
-                items = new { type = "array", items = ItemSchema() }
+                items = new { type = "array", items = ItemSchema() },
+                additionalCharges = new { type = "array", items = ChargeSchema() }
             },
-            required = new[] { "supplierName", "supplierTaxId", "customerName", "customerTaxId", "invoiceNumber", "invoiceDate", "dueDate", "currency", "subtotal", "taxAmount", "total", "confidence", "warnings", "items" }
+            required = new[] { "supplierName", "supplierTaxId", "customerName", "customerTaxId", "supplierEvidence", "customerEvidence", "invoiceNumber", "invoiceDate", "dueDate", "currency", "subtotal", "taxAmount", "total", "confidence", "warnings", "items", "additionalCharges" }
         }
     };
 
@@ -152,6 +159,21 @@ public sealed class OpenAiInvoiceExtractor
             totalAmount = new { type = new[] { "number", "null" } }
         },
         required = new[] { "description", "quantity", "unitPrice", "unitPriceCalculated", "baseAmount", "taxRate", "taxAmount", "totalAmount" }
+    };
+
+    private static object ChargeSchema() => new
+    {
+        type = "object",
+        additionalProperties = false,
+        properties = new
+        {
+            description = new { type = new[] { "string", "null" } },
+            baseAmount = new { type = new[] { "number", "null" } },
+            taxRate = new { type = new[] { "number", "null" } },
+            taxAmount = new { type = new[] { "number", "null" } },
+            totalAmount = new { type = new[] { "number", "null" } }
+        },
+        required = new[] { "description", "baseAmount", "taxRate", "taxAmount", "totalAmount" }
     };
 
     private static (string? Type, string? Code, string? Message) ParseError(string body)
@@ -202,10 +224,11 @@ public sealed class OpenAiInvoiceExtractor
         string? supplierTaxId = extraction.SupplierTaxId ?? extraction.Issuer?.TaxId;
         string? customerName = extraction.CustomerName ?? extraction.Customer?.Name;
         string? customerTaxId = extraction.CustomerTaxId ?? extraction.Customer?.TaxId;
+        string? semanticError = ValidateSupplierCustomerRoles(extraction, supplierName, customerName, supplierTaxId, customerTaxId);
         bool issuerMatchesCustomer = !string.IsNullOrWhiteSpace(supplierName) &&
             ((!string.IsNullOrWhiteSpace(customerName) && string.Equals(supplierName.Trim(), customerName.Trim(), StringComparison.OrdinalIgnoreCase)) ||
              (!string.IsNullOrWhiteSpace(supplierTaxId) && string.Equals(supplierTaxId.Trim(), customerTaxId?.Trim(), StringComparison.OrdinalIgnoreCase)));
-        if (!string.IsNullOrWhiteSpace(supplierName) && !issuerMatchesCustomer)
+        if (semanticError is null && !string.IsNullOrWhiteSpace(supplierName) && !issuerMatchesCustomer)
         {
             Set(draft, "provider", supplierName.Trim(), value => draft.ProviderName = value);
             if (!string.IsNullOrWhiteSpace(supplierTaxId)) Set(draft, "supplierTaxId", supplierTaxId.Trim(), value => draft.SupplierTaxId = value);
@@ -217,6 +240,7 @@ public sealed class OpenAiInvoiceExtractor
             draft.FieldOrigins["provider"] = "AI";
             draft.FieldOrigins["supplierTaxId"] = "AI";
             draft.Warnings.Add("OpenAI no encontró evidencia suficiente de un proveedor; customer/billTo no se usa como supplier.");
+            if (semanticError is not null) draft.Warnings.Add($"OpenAI error semántico: {semanticError}");
         }
         if (!string.IsNullOrWhiteSpace(extraction.InvoiceNumber)) Set(draft, "invoiceNumber", extraction.InvoiceNumber.Trim(), value => draft.InvoiceNumber = value);
         if (extraction.InvoiceDate.HasValue) Set(draft, "invoiceDate", extraction.InvoiceDate.Value, value => draft.InvoiceDate = value);
@@ -230,24 +254,99 @@ public sealed class OpenAiInvoiceExtractor
 
         if (extraction.Items.Count > 0 && extraction.Items.All(IsValidAiItem))
         {
-            draft.Items = extraction.Items.Select((item, index) => new SupplierInvoiceItemDraft
+            draft.Items = extraction.Items.Select((item, index) =>
             {
-                Position = index + 1,
-                Description = item.Description!.Trim(),
-                Amount = (item.Quantity ?? item.Amount)!.Value,
-                UnitPrice = item.UnitPrice ?? (item.BaseAmount ?? item.DocumentLineNetAmount)!.Value / (item.Quantity ?? item.Amount)!.Value,
-                UnitPriceCalculated = item.UnitPriceCalculated || !item.UnitPrice.HasValue,
-                IVA = (item.TaxRate ?? item.IVA)!.Value,
-                DocumentLineNetAmount = item.BaseAmount ?? item.DocumentLineNetAmount,
-                DocumentLineTaxAmount = item.TaxAmount,
-                DocumentLineTotal = item.TotalAmount ?? item.DocumentLineTotal
+                decimal amount = (item.Quantity ?? item.Amount)!.Value;
+                decimal? baseAmount = item.BaseAmount ?? item.DocumentLineNetAmount;
+                decimal? unitPrice = item.UnitPrice;
+                bool unitPriceCalculated = item.UnitPriceCalculated || !unitPrice.HasValue;
+                if (baseAmount.HasValue && amount > 0)
+                {
+                    decimal derivedUnitPrice = baseAmount.Value / amount;
+                    bool unitPriceIsIncompatibleWithBase = unitPrice.HasValue &&
+                        Math.Abs(amount * unitPrice.Value - baseAmount.Value) > 0.02m;
+                    if (!unitPrice.HasValue || unitPriceCalculated || unitPriceIsIncompatibleWithBase)
+                    {
+                        unitPrice = derivedUnitPrice;
+                        unitPriceCalculated = true;
+                    }
+                }
+                decimal taxRate = (item.TaxRate ?? item.IVA)!.Value;
+                decimal baseValue = baseAmount!.Value;
+                decimal lineTax = item.TaxAmount ??
+                    decimal.Round(baseValue * taxRate / 100m, 2, MidpointRounding.AwayFromZero);
+                decimal lineTotal = item.TotalAmount ?? item.DocumentLineTotal ?? baseValue + lineTax;
+                bool totalIsActuallyNet = item.TotalAmount.HasValue && lineTax > 0m &&
+                    Math.Abs(item.TotalAmount.Value - baseValue) <= 0.02m;
+                if (totalIsActuallyNet)
+                    lineTotal = baseValue + lineTax;
+
+                return new SupplierInvoiceItemDraft
+                {
+                    Position = index + 1,
+                    Description = item.Description!.Trim(),
+                    Amount = amount,
+                    UnitPrice = unitPrice ?? 0m,
+                    UnitPriceCalculated = unitPriceCalculated,
+                    IVA = taxRate,
+                    DocumentLineNetAmount = baseAmount,
+                    DocumentLineTaxAmount = lineTax,
+                    DocumentLineTotal = lineTotal
+                };
             }).ToList();
             draft.FieldOrigins["items"] = "AI";
         }
         else if (extraction.Items.Count > 0)
             draft.Warnings.Add("OpenAI devolvió items incompletos; se conserva el parser local para los items.");
+        if (extraction.AdditionalCharges.Count > 0)
+        {
+            foreach (AiAdditionalChargeExtraction charge in extraction.AdditionalCharges)
+            {
+                if (string.IsNullOrWhiteSpace(charge.Description) || !charge.BaseAmount.HasValue || charge.BaseAmount <= 0 ||
+                    !charge.TaxRate.HasValue || charge.TaxRate is < 0 or > 100)
+                {
+                    draft.Warnings.Add("OpenAI devolvió un cargo adicional incompleto; no se añade.");
+                    continue;
+                }
+                decimal tax = charge.TaxAmount ?? decimal.Round(charge.BaseAmount.Value * charge.TaxRate.Value / 100m, 2, MidpointRounding.AwayFromZero);
+                decimal total = charge.TotalAmount ?? charge.BaseAmount.Value + tax;
+                decimal expectedTax = decimal.Round(charge.BaseAmount.Value * charge.TaxRate.Value / 100m, 2, MidpointRounding.AwayFromZero);
+                if (Math.Abs(tax - expectedTax) > 0.02m || total <= 0 || Math.Abs(total - (charge.BaseAmount.Value + tax)) > 0.02m)
+                {
+                    draft.Warnings.Add("OpenAI devolviÃ³ un cargo adicional incoherente; no se aÃ±ade.");
+                    continue;
+                }
+                draft.Items.Add(new SupplierInvoiceItemDraft
+                {
+                    Position = draft.Items.Count + 1,
+                    Description = charge.Description.Trim(),
+                    Amount = 1m,
+                    UnitPrice = charge.BaseAmount.Value,
+                    UnitPriceCalculated = true,
+                    IVA = charge.TaxRate.Value,
+                    DocumentLineNetAmount = charge.BaseAmount.Value,
+                    DocumentLineTaxAmount = tax,
+                    DocumentLineTotal = total
+                });
+            }
+            draft.FieldOrigins["additionalCharges"] = "AI";
+            draft.FieldOrigins["items"] = "AI";
+        }
         foreach (string warning in extraction.Warnings.Where(warning => !string.IsNullOrWhiteSpace(warning)))
             draft.Warnings.Add($"OpenAI: {warning}");
+    }
+
+    private static string? ValidateSupplierCustomerRoles(AiInvoiceExtraction extraction, string? supplierName, string? customerName, string? supplierTaxId, string? customerTaxId)
+    {
+        if (string.IsNullOrWhiteSpace(supplierName)) return "supplierName es null o vacío.";
+        if (string.Equals(supplierName.Trim(), customerName?.Trim(), StringComparison.OrdinalIgnoreCase) ||
+            (!string.IsNullOrWhiteSpace(supplierTaxId) && string.Equals(supplierTaxId.Trim(), customerTaxId?.Trim(), StringComparison.OrdinalIgnoreCase)))
+            return "supplier y customer representan la misma entidad.";
+        string evidence = extraction.SupplierEvidence ?? "";
+        if (Regex.IsMatch(evidence, @"facturar\s+a|cliente|bill\s*to|customer|destinatario|receptor", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
+            return "supplierEvidence contiene etiquetas propias del customer.";
+        if (string.IsNullOrWhiteSpace(evidence)) return "supplierEvidence no aporta evidencia de emisor.";
+        return null;
     }
 
     private static bool IsValidAiItem(AiInvoiceItemExtraction item) =>
@@ -273,7 +372,8 @@ public sealed class OpenAiInvoiceExtractor
 
     private static string BuildPrompt(string text) =>
         "Eres un experto en interpretación de facturas de proveedores europeas. Extrae con máxima precisión del PDF completo: texto, tablas, logotipos, estructura visual, encabezados y pies. " +
-        "Identifica siempre supplier (issuer) y customer (bill to) como entidades distintas: supplier emite y customer recibe. Nunca uses customer como supplier; si el proveedor solo aparece en logo/imagen o no hay evidencia suficiente, supplierName y supplierTaxId deben ser null. No inventes datos. " +
+        "Identifica siempre supplier (issuer) y customer (bill to) como entidades distintas: supplier es exclusivamente la empresa que EMITE y customer es exclusivamente la empresa que RECIBE o es facturada. Las etiquetas Facturar a, Cliente, Bill to, Customer, Destinatario y Receptor siempre identifican customer y nunca supplier. Si IBYS TECHNOLOGIES aparece en ese bloque, debe ir a customer. Usa logotipo, cabecera, razón social, dirección fiscal y contexto visual para identificar supplier; nunca infieras supplier desde el bloque de facturación. Si hay duda, supplierName y supplierTaxId deben ser null. No inventes datos. " +
+        "Devuelve supplierEvidence y customerEvidence describiendo las etiquetas y estructura visual que justifican cada rol. Para cargos no pertenecientes a una línea de producto devuelve additionalCharges con description, baseAmount, taxRate, taxAmount y totalAmount. " +
         "Respeta literalmente subtotal/base imponible, taxAmount/cuota IVA y total final; no recalcules importes impresos. Para cada item devuelve description, quantity, unitPrice, unitPriceCalculated, taxRate, baseAmount, taxAmount y totalAmount. Si unitPrice no aparece explícitamente, usa null; solo puedes calcularlo desde baseAmount/quantity y marcar unitPriceCalculated=true. Devuelve fechas ISO YYYY-MM-DD, moneda EUR/USD/GBP o null, confidence entre 0 y 100 y warnings para cualquier duda. Devuelve exclusivamente el JSON solicitado. Texto PdfPig de apoyo:\n" + text;
 
     private static string? ReadOutputText(JsonDocument document)

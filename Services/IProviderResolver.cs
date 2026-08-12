@@ -16,7 +16,8 @@ public interface IProviderResolver
 public sealed record ProviderResolution(
     ProviderMatch? Match,
     IReadOnlyList<ProviderMatch> Candidates,
-    string? Warning)
+    string? Warning,
+    ProviderResolutionDiagnostic? Diagnostic = null)
 {
     public bool IsAmbiguous => Match is null && Candidates.Count > 1;
 }

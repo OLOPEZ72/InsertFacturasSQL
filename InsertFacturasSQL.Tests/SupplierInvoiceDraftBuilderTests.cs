@@ -224,6 +224,67 @@ BASE IMPONIBLE GASTOS DE ENVÍO 3,30 EUR
         Assert.DoesNotContain(draft.ValidationErrors, error => error.Contains("IVA calculado", StringComparison.OrdinalIgnoreCase));
     }
 
+    [Fact]
+    public void Validate_AllowsNumericThreeScalePriceWithinTolerance()
+    {
+        var item = new SupplierInvoiceItemDraft
+        {
+            Position = 1, Description = "Leche", Amount = 60, UnitPrice = 50.77m / 60m,
+            IVA = 4, DocumentLineNetAmount = 50.77m, CommercialProjectId = 1970
+        };
+        var draft = new SupplierInvoiceDraft
+        {
+            CompanyId = 1, CommercialProjectId = 1970, CommercialProjectIsValid = true,
+            InvoiceNumber = "ROUND-1", InvoiceDate = new DateTime(2026, 4, 14),
+            DocumentTotal = 52.80m, Items = [item]
+        };
+
+        new SupplierInvoiceDraftBuilder().Validate(draft);
+
+        Assert.Equal(0.01m, item.PersistedBaseDifference);
+        Assert.DoesNotContain(draft.ValidationErrors, error => error.Contains("no puede reproducir", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void Validate_RejectsNumericThreeScalePriceOutsideTolerance()
+    {
+        var draft = new SupplierInvoiceDraft
+        {
+            CompanyId = 1, CommercialProjectId = 1970, CommercialProjectIsValid = true,
+            InvoiceNumber = "ROUND-2", InvoiceDate = new DateTime(2026, 4, 14),
+            DocumentTotal = 52.80m,
+            Items = [new SupplierInvoiceItemDraft
+            {
+                Position = 1, Description = "Leche", Amount = 60, UnitPrice = 0.88m,
+                IVA = 4, DocumentLineNetAmount = 50.77m, CommercialProjectId = 1970
+            }]
+        };
+
+        new SupplierInvoiceDraftBuilder().Validate(draft);
+
+        Assert.Contains(draft.ValidationErrors, error => error.Contains("no puede reproducir", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void Build_AggregatesMultipleRetailTaxBlocks()
+    {
+        var document = CreateSyntheticDocument("""
+FACTURA Nº: MULTI-IVA-1
+FECHA FACTURA: 14/04/2026
+IVA 4,00 38,77 1,55 0,00 0,00 40,32
+IVA 10,00 92,67 9,27 0,00 0,00 101,94
+IVA 10,00 24,77 2,48 0,00 0,00 27,25
+TOTAL IMPUESTOS INCLUIDOS 169,51 EUR
+ITEM|Producto 1|1|38,77|0|0
+""");
+
+        SupplierInvoiceDraft draft = new SupplierInvoiceDraftBuilder().Build(document, 1970);
+
+        Assert.Equal(156.21m, draft.DocumentSubtotal);
+        Assert.Equal(13.30m, draft.DocumentTaxTotal);
+        Assert.Equal(169.51m, draft.DocumentTotal);
+    }
+
     [Theory]
     [InlineData("1 de enero de 2026", 1)]
     [InlineData("1 de febrero de 2026", 2)]

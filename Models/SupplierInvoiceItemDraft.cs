@@ -21,6 +21,18 @@ public sealed class SupplierInvoiceItemDraft
 
     public decimal CalculatedTotal => DocumentLineTotal ?? CalculatedNetAmount + CalculatedTaxAmount;
 
+    // ItemsProviderOrder.UnitPrice is numeric(18,3); this is the value SQL Server
+    // will actually use when calculating the persisted line base.
+    public decimal PersistedBaseAmount => RoundCurrency(
+        Amount * PersistedUnitPrice *
+        (1m - (DiscountPercent ?? 0m) / 100m));
+
+    public decimal PersistedUnitPrice => decimal.Round(UnitPrice, 3, MidpointRounding.AwayFromZero);
+
+    public decimal PersistedBaseDifference => DocumentLineNetAmount.HasValue
+        ? Math.Abs(PersistedBaseAmount - DocumentLineNetAmount.Value)
+        : 0m;
+
     private static decimal RoundCurrency(decimal value) =>
         decimal.Round(value, 2, MidpointRounding.AwayFromZero);
 }
